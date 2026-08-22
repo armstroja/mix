@@ -49,6 +49,8 @@ body{
   padding:40px 20px;user-select:none;gap:28px;
   transition:background .5s,color .5s;overflow:hidden;
   position:relative;
+  -webkit-user-select:none;
+  -webkit-touch-callout:none;
 }
 #bg-breath{position:fixed;inset:0;z-index:-1;pointer-events:none;
   background:radial-gradient(circle at 50% 50%,var(--seg-off) 0%,transparent 62%);
@@ -64,6 +66,14 @@ a{font-size:8px;letter-spacing:.28em;text-transform:lowercase;color:var(--text-d
 #td-beige{background:#ccc3b8;}#td-sky{background:#6898b4;}#td-sea{background:#589878;}
 #stems-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;width:460px;}
 .drop-zone{border:1px dashed var(--border-dim);border-radius:8px;padding:14px 6px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s;position:relative;min-height:72px;}
+.drop-zone,.eq-card,.channel-strip,.seg,#center-dot,#export-btn,.theme-dot{
+  -webkit-user-select:none;
+  user-select:none;
+  -webkit-touch-callout:none;
+  -webkit-tap-highlight-color:transparent;
+  touch-action:manipulation;
+}
+.channel-strip{touch-action:none;}
 .drop-zone:hover,.drop-zone.drag-over{border-color:var(--seg-hover);background:var(--seg-off);}
 .drop-zone input[type=file]{display:none;}
 .dz-label{font-size:8px;letter-spacing:.22em;text-transform:uppercase;color:var(--text-mid);margin-bottom:6px;}
@@ -213,7 +223,7 @@ const grid=document.getElementById('stems-grid');
 STEMS.forEach(s=>{
   const dz=document.createElement('div');
   dz.className='drop-zone';dz.id='dz-'+s.id;
-  dz.innerHTML=`<div class="dz-label">${s.label}</div><div class="dz-hint">drop files / click</div><input type="file" id="fi-${s.id}" accept="audio/*" multiple>`;
+  dz.innerHTML=`<div class="dz-label">${s.label}</div><div class="dz-hint">drop files / click</div><input type="file" id="fi-${s.id}" accept="audio/*,.mp3,.m4a,.wav,.aif,.aiff,.flac,.ogg" multiple>`;
   dz.addEventListener('click',()=>document.getElementById('fi-'+s.id).click());
   dz.addEventListener('dragover',e=>{e.preventDefault();dz.classList.add('drag-over');});
   dz.addEventListener('dragleave',()=>dz.classList.remove('drag-over'));
