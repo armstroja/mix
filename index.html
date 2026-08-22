@@ -213,7 +213,7 @@ const grid=document.getElementById('stems-grid');
 STEMS.forEach(s=>{
   const dz=document.createElement('div');
   dz.className='drop-zone';dz.id='dz-'+s.id;
-  dz.innerHTML=`<div class="dz-label">${s.label}</div><div class="dz-hint">drop files / click</div><input type="file" id="fi-${s.id}" accept="audio/*" multiple>`;
+  dz.innerHTML=`<div class="dz-label">${s.label}</div><div class="dz-hint">drop files / click</div><input type="file" id="fi-${s.id}" accept="audio/*,.mp3,.m4a,.wav,.aif,.aiff,.flac,.ogg" multiple>`;
   dz.addEventListener('click',()=>document.getElementById('fi-'+s.id).click());
   dz.addEventListener('dragover',e=>{e.preventDefault();dz.classList.add('drag-over');});
   dz.addEventListener('dragleave',()=>dz.classList.remove('drag-over'));
