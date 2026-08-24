@@ -189,7 +189,7 @@ let buffers={}, srcNodes={}, gainNodes={}, analyserNodes={}, eqData={};
 let vols={vocals:STEPS,drums:STEPS,bass:STEPS,other:STEPS};
 let muted={vocals:false,drums:false,bass:false,other:false};
 let playing=false, startTime=0, pauseOff=0, duration=0;
-let holdTimer=null, soloStem=null, soloSnap={};
+let holdTimer=null, soloSet=new Set(), soloOriginal=null, soloSnap={};
 const rainbowState={};
 let interacting=false;
 let glowTimers={};
@@ -198,7 +198,8 @@ let dotClickTimer=null, zenMode=false;
 let breathPhase='inhale', breathT=0, breathScale=1, breathGlow=0;
 let breathIntensity=0, breathJitterSeed=Math.random()*1000, lastFrameTime=performance.now();
 const eqSmooth={};
-STEMS.forEach(s=>{eqSmooth[s.id]=new Float32Array(STEPS).fill(0);});
+const eqCardSmooth={};
+STEMS.forEach(s=>{eqSmooth[s.id]=new Float32Array(STEPS).fill(0);eqCardSmooth[s.id]=new Float32Array(EQ_BARS).fill(0);});
 
 // ── Arm drag-to-volume state ───────────────────────────────────────
 let armDrag={active:false,id:null,startY:0,startX:0,startVol:0,moved:false};
@@ -329,11 +330,28 @@ function applyArmDrag(clientX,clientY){
   }
 }
 
+// While a solo hold is engaged, moving the cursor across the mixer row
+// solos whichever arm(s) the pointer is currently over — the arm where the
+// hold started, plus (if the pointer has drifted onto a neighbouring arm)
+// that second arm too. So you can hold one stem then slide toward a
+// neighbour to hear both soloed together.
+function updateSoloHover(clientX,clientY){
+  if(!soloOriginal)return;
+  armDrag.moved=true;
+  const el=document.elementFromPoint(clientX,clientY);
+  const strip=el&&el.closest?el.closest('.channel-strip'):null;
+  const hoverId=strip?strip.id.replace('arm-',''):null;
+  const ids=(hoverId&&hoverId!==soloOriginal)?[soloOriginal,hoverId]:[soloOriginal];
+  applySoloSet(new Set(ids));
+}
+
 window.addEventListener('mousemove', e=>{
+  if(soloOriginal){updateSoloHover(e.clientX,e.clientY);return;}
   if(!armDrag.active)return;
   applyArmDrag(e.clientX,e.clientY);
 });
 window.addEventListener('touchmove', e=>{
+  if(soloOriginal){updateSoloHover(e.touches[0].clientX,e.touches[0].clientY);return;}
   if(!armDrag.active)return;
   applyArmDrag(e.touches[0].clientX,e.touches[0].clientY);
 },{passive:true});
@@ -518,27 +536,43 @@ function glowArm(id){
 function startHold(e,id){
   interacting=true;
   holdTimer=setTimeout(()=>{
-    holdTimer=null;soloStem=id;
-    STEMS.forEach(s=>{
-      if(s.id!==id){
-        soloSnap[s.id]=vols[s.id];
-        gainNodes[s.id]?.gain.setTargetAtTime(0,actx.currentTime,0.02);
-        document.querySelectorAll('#arm-'+s.id+' .seg').forEach(b=>b.classList.add('muted'));
-      }
-    });
+    holdTimer=null;
+    engageSolo(id);
   },350);
+}
+// Snapshot current volumes, then solo down to just `id` (all other stems
+// silenced but remembered so they can be restored on release).
+function engageSolo(id){
+  soloOriginal=id;
+  soloSnap={};
+  STEMS.forEach(s=>{soloSnap[s.id]=vols[s.id];});
+  applySoloSet(new Set([id]));
+}
+// Apply a set of stem ids as the currently-soloed group: those stems play
+// back at their snapshotted volume, everything else is silenced.
+function applySoloSet(idSet){
+  soloSet=idSet;
+  STEMS.forEach(s=>{
+    const active=soloSet.has(s.id);
+    const segs=document.querySelectorAll('#arm-'+s.id+' .seg');
+    if(active){
+      gainNodes[s.id]?.gain.setTargetAtTime((soloSnap[s.id]??vols[s.id])/STEPS,actx.currentTime,0.03);
+      segs.forEach(b=>b.classList.remove('muted'));
+    }else{
+      gainNodes[s.id]?.gain.setTargetAtTime(0,actx.currentTime,0.02);
+      segs.forEach(b=>b.classList.add('muted'));
+    }
+  });
 }
 function endHold(){
   if(holdTimer){clearTimeout(holdTimer);holdTimer=null;}
   interacting=false;
-  if(!soloStem)return;
+  if(!soloOriginal)return;
   STEMS.forEach(s=>{
-    if(s.id!==soloStem){
-      gainNodes[s.id]?.gain.setTargetAtTime((soloSnap[s.id]??vols[s.id])/STEPS,actx.currentTime,0.05);
-      document.querySelectorAll('#arm-'+s.id+' .seg').forEach(b=>b.classList.remove('muted'));
-    }
+    gainNodes[s.id]?.gain.setTargetAtTime((soloSnap[s.id]??vols[s.id])/STEPS,actx.currentTime,0.05);
+    document.querySelectorAll('#arm-'+s.id+' .seg').forEach(b=>b.classList.remove('muted'));
   });
-  soloSnap={};soloStem=null;
+  soloSnap={};soloSet=new Set();soloOriginal=null;
 }
 
 function refreshArm(id){
@@ -551,16 +585,21 @@ function refreshArm(id){
 STEMS.forEach(s=>refreshArm(s.id));
 
 // ── EQ bars (card) ────────────────────────────────────────────────
+// Fast attack / slow release so bars snap up with a transient but trail
+// off smoothly afterward, purely driven by each stem's live frequency
+// data (never by anything about the loaded file itself, e.g. its name).
 function updateEqBars(){
   STEMS.forEach(s=>{
     const an=analyserNodes[s.id];if(!an)return;
     an.getByteFrequencyData(eqData[s.id]);
     const data=eqData[s.id],bins=data.length;
+    const smooth=eqCardSmooth[s.id];
     for(let i=0;i<EQ_BARS;i++){
       const bar=document.getElementById('eqbar-'+s.id+'-'+i);if(!bar)continue;
-      const val=muted[s.id]?0:(data[Math.floor(i/EQ_BARS*bins)]||0);
-      bar.style.height=Math.max(4,Math.round(val/255*100))+'%';
-      const br=Math.round(20+val*0.08);
+      const raw=muted[s.id]?0:(data[Math.floor(i/EQ_BARS*bins)]||0)/255;
+      smooth[i]=raw>smooth[i]?raw*0.6+smooth[i]*0.4:raw*0.08+smooth[i]*0.92;
+      bar.style.height=Math.max(4,Math.round(smooth[i]*100))+'%';
+      const br=Math.round(20+smooth[i]*255*0.08);
       bar.style.background=playing&&!muted[s.id]?`rgb(${br},${br},${br})`:'';
     }
   });
