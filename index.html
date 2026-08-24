@@ -47,7 +47,7 @@ body{
   min-height:100vh;display:flex;flex-direction:column;
   align-items:center;justify-content:center;
   padding:40px 20px;user-select:none;gap:28px;
-  transition:background .5s,color .5s;overflow:hidden;
+  transition:background .1s,color .1s;overflow:hidden;
   position:relative;
   -webkit-user-select:none;
   -webkit-touch-callout:none;
@@ -124,7 +124,7 @@ a{font-size:8px;letter-spacing:.28em;text-transform:lowercase;color:var(--text-d
 #export-btn:disabled{opacity:.3;cursor:default;}
 </style>
 </head>
-<body>
+<body class="theme-beige">
 
 <div id="bg-breath"></div>
 
@@ -132,9 +132,9 @@ a{font-size:8px;letter-spacing:.28em;text-transform:lowercase;color:var(--text-d
 <a href="https://bandlab.com/splitter">split your own songs</a>
 
 <div id="theme-row">
-  <div class="theme-dot active" id="td-black" title="Black" onclick="setTheme('black','td-black')"></div>
+  <div class="theme-dot" id="td-black" title="Black" onclick="setTheme('black','td-black')"></div>
   <div class="theme-dot" id="td-shale" title="Shale" onclick="setTheme('shale','td-shale')"></div>
-  <div class="theme-dot" id="td-beige" title="Beige" onclick="setTheme('beige','td-beige')"></div>
+  <div class="theme-dot active" id="td-beige" title="Beige" onclick="setTheme('beige','td-beige')"></div>
   <div class="theme-dot" id="td-sky"   title="Sky"   onclick="setTheme('sky','td-sky')"></div>
   <div class="theme-dot" id="td-sea"   title="Sea"   onclick="setTheme('sea','td-sea')"></div>
 </div>
