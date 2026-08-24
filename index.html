@@ -104,8 +104,19 @@ a{font-size:8px;letter-spacing:.28em;text-transform:lowercase;color:var(--text-d
 #center-dot:focus-visible{box-shadow:0 0 0 2px var(--seg-on);}
 #center-dot.playing{background:var(--dot-playing);border-color:var(--dot-border-playing);}
 #transport{display:flex;align-items:center;gap:12px;width:340px;}
-#prog-wrap{flex:1;height:1px;background:var(--prog-bg);cursor:pointer;position:relative;}
-#prog-bar{height:100%;background:var(--prog-fill);width:0%;pointer-events:none;}
+#prog-wrap{
+  flex:1;height:1px;background:var(--prog-bg);cursor:pointer;position:relative;
+  padding:11px 0;margin:-11px 0;background-clip:content-box;
+  touch-action:none;
+}
+#prog-bar{height:1px;background:var(--prog-fill);width:0%;pointer-events:none;position:absolute;top:11px;left:0;transition:height .15s ease,top .15s ease;}
+#prog-wrap.scrubbing #prog-bar{height:2px;top:10.5px;}
+#prog-thumb{
+  position:absolute;top:50%;width:10px;height:10px;border-radius:50%;
+  background:var(--prog-fill);transform:translate(-50%,-50%) scale(0);
+  pointer-events:none;transition:transform .15s ease;left:0%;
+}
+#prog-wrap.scrubbing #prog-thumb{transform:translate(-50%,-50%) scale(1);}
 #time{font-size:9px;color:var(--text-faint);letter-spacing:.08em;min-width:56px;text-align:right;}
 #status{font-size:9px;letter-spacing:.16em;color:var(--text-faint);text-transform:uppercase;height:12px;}
 #export-btn{background:none;border:none;font-size:8px;letter-spacing:.22em;text-transform:uppercase;color:var(--text-dim);cursor:pointer;padding:0;transition:color .2s;font-family:inherit;}
@@ -145,7 +156,7 @@ a{font-size:8px;letter-spacing:.28em;text-transform:lowercase;color:var(--text-d
 </div>
 
 <div id="transport">
-  <div id="prog-wrap"><div id="prog-bar"></div></div>
+  <div id="prog-wrap"><div id="prog-bar"></div><div id="prog-thumb"></div></div>
   <div id="time">–:–– / –:––</div>
 </div>
 
@@ -350,6 +361,12 @@ function initCtx(){
     gainNodes[s.id]=g;analyserNodes[s.id]=an;
     eqData[s.id]=new Uint8Array(an.frequencyBinCount);
   });
+  // Safari/iOS route-change recovery: watch for the context dropping out from under us
+  actx.onstatechange=()=>{
+    if(playing&&actx.state!=='running'){
+      actx.resume().catch(()=>rebuildAudioGraph());
+    }
+  };
 }
 async function loadStem(id,file){
   initCtx();setStatus('Loading '+id+'…');
@@ -385,6 +402,60 @@ function pauseAll(){
   playing=false;dot.classList.remove('playing');
 }
 function hasAnyStem(){return STEMS.some(s=>buffers[s.id]);}
+
+// ── Safari route-change recovery ───────────────────────────────────
+let silentFrames=0;
+const SILENT_THRESHOLD=6; // ~6 watchdog ticks (300ms each) of true silence while playing
+
+function resyncPlayback(){
+  if(!playing)return;
+  const elapsed=actx.currentTime-startTime;
+  pauseOff=Math.max(0,elapsed%(duration||1));
+  try{STEMS.forEach(s=>{try{srcNodes[s.id]?.stop();}catch(e){}});}catch(e){}
+  const doResume=()=>{
+    STEMS.forEach(s=>spawnSrc(s.id,pauseOff));
+    startTime=actx.currentTime-pauseOff;
+    STEMS.forEach(s=>applyVol(s.id));
+  };
+  if(actx.state!=='running'){
+    actx.resume().then(doResume).catch(()=>{rebuildAudioGraph();});
+  }else{
+    doResume();
+  }
+}
+
+function rebuildAudioGraph(){
+  const oldBuffers=buffers; // decoded buffers survive context death
+  const wasPlaying=playing;
+  try{actx?.close();}catch(e){}
+  actx=null;gainNodes={};analyserNodes={};srcNodes={};
+  initCtx();
+  buffers=oldBuffers;
+  STEMS.forEach(s=>applyVol(s.id));
+  if(wasPlaying){playing=true;resyncPlayback();}
+}
+
+document.addEventListener('visibilitychange',()=>{
+  if(!document.hidden&&playing&&actx&&actx.state!=='running'){
+    actx.resume().catch(()=>rebuildAudioGraph());
+  }
+});
+
+setInterval(()=>{
+  if(!playing||!actx||!masterAnalyser)return;
+  const anyAudible=STEMS.some(s=>buffers[s.id]&&!muted[s.id]&&vols[s.id]>1);
+  if(!anyAudible){silentFrames=0;return;}
+  masterAnalyser.getByteTimeDomainData(masterTimeData);
+  let sum=0;
+  for(let i=0;i<masterTimeData.length;i++){const v=(masterTimeData[i]-128)/128;sum+=v*v;}
+  const rms=Math.sqrt(sum/masterTimeData.length);
+  if(rms<0.001){
+    silentFrames++;
+    if(silentFrames>=SILENT_THRESHOLD){silentFrames=0;resyncPlayback();}
+  }else{
+    silentFrames=0;
+  }
+},300);
 
 // ── Export ────────────────────────────────────────────────────────
 function audioBufferToWav(buffer){
@@ -584,13 +655,57 @@ dot.addEventListener('click',e=>{
   dotClickTimer=setTimeout(()=>{dotClickTimer=null;playing?pauseAll():playAll();},220);
 });
 
-document.getElementById('prog-wrap').addEventListener('click',e=>{
+// ── Progress bar: click + drag-to-scrub (mouse & touch) ────────────
+const progWrap = document.getElementById('prog-wrap');
+const progBar  = document.getElementById('prog-bar');
+const progThumb= document.getElementById('prog-thumb');
+let scrubbing = false, wasPlayingBeforeScrub = false;
+
+function pctFromClientX(clientX){
+  const rect = progWrap.getBoundingClientRect();
+  return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+}
+function renderScrubPosition(pct){
+  progBar.style.width = (pct*100)+'%';
+  progThumb.style.left = (pct*100)+'%';
+  document.getElementById('time').textContent = fmt(pct*duration) + ' / ' + fmt(duration);
+}
+function startScrub(clientX){
   if(!duration)return;
-  const rect=e.currentTarget.getBoundingClientRect();
-  const pct=(e.clientX-rect.left)/rect.width;
-  pauseOff=pct*duration;
-  if(playing){pauseAll();playAll();}
-  else{document.getElementById('prog-bar').style.width=(pct*100)+'%';document.getElementById('time').textContent=fmt(pauseOff)+' / '+fmt(duration);}
+  scrubbing = true;
+  progWrap.classList.add('scrubbing');
+  wasPlayingBeforeScrub = playing;
+  if(playing) pauseAll(); // freeze audio while dragging, resume on release
+  renderScrubPosition(pctFromClientX(clientX));
+}
+function moveScrub(clientX){
+  if(!scrubbing)return;
+  renderScrubPosition(pctFromClientX(clientX));
+}
+function endScrub(clientX){
+  if(!scrubbing)return;
+  scrubbing = false;
+  progWrap.classList.remove('scrubbing');
+  const pct = pctFromClientX(clientX);
+  pauseOff = pct*duration;
+  renderScrubPosition(pct);
+  if(wasPlayingBeforeScrub){ initCtx(); if(actx.state==='suspended')actx.resume(); playAll(); }
+}
+
+// mouse
+progWrap.addEventListener('mousedown', e=>{ e.preventDefault(); startScrub(e.clientX); });
+window.addEventListener('mousemove', e=>{ if(scrubbing) moveScrub(e.clientX); });
+window.addEventListener('mouseup', e=>{ if(scrubbing) endScrub(e.clientX); });
+
+// touch
+progWrap.addEventListener('touchstart', e=>{
+  startScrub(e.touches[0].clientX);
+}, {passive:true});
+progWrap.addEventListener('touchmove', e=>{
+  if(scrubbing){ e.preventDefault(); moveScrub(e.touches[0].clientX); }
+}, {passive:false});
+progWrap.addEventListener('touchend', e=>{
+  endScrub(e.changedTouches[0].clientX);
 });
 
 // ── Keyboard ──────────────────────────────────────────────────────
@@ -761,11 +876,12 @@ function animate(){
     }
   });
 
-  if(playing&&duration>0){
+  if(playing&&duration>0&&!scrubbing){
     const el=actx.currentTime-startTime;
     document.getElementById('prog-bar').style.width=Math.min(el/duration*100,100)+'%';
+    document.getElementById('prog-thumb').style.left=Math.min(el/duration*100,100)+'%';
     document.getElementById('time').textContent=fmt(el)+' / '+fmt(duration);
-    if(el>=duration+0.2){pauseOff=0;playing=false;dot.classList.remove('playing');document.getElementById('prog-bar').style.width='0%';}
+    if(el>=duration+0.2){pauseOff=0;playing=false;dot.classList.remove('playing');document.getElementById('prog-bar').style.width='0%';document.getElementById('prog-thumb').style.left='0%';}
   }
 }
 
