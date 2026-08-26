@@ -368,12 +368,26 @@ window.addEventListener('touchend', ()=>{
 function initCtx(){
   if(actx)return;
   actx=new(window.AudioContext||window.webkitAudioContext)();
-  masterGain=actx.createGain();masterGain.gain.value=1;masterGain.connect(actx.destination);
+
+  // Safari/WebKit fix: on internal speakers, destination.maxChannelCount
+  // can be >2 (e.g. 4 on some MacBooks), and Safari mishandles the
+  // stereo->N-channel "speakers" downmix in that case — audio collapses
+  // to mono or gets misrouted. AirPods report maxChannelCount 2, so this
+  // silently "works" there while breaking on built-in speakers. Force the
+  // destination to explicit stereo so the downmix never kicks in.
+  actx.destination.channelCount=2;
+  actx.destination.channelCountMode='explicit';
+  actx.destination.channelInterpretation='speakers';
+
+  masterGain=actx.createGain();masterGain.gain.value=1;
+  masterGain.channelCount=2;masterGain.channelCountMode='explicit';masterGain.channelInterpretation='speakers';
+  masterGain.connect(actx.destination);
   masterAnalyser=actx.createAnalyser();masterAnalyser.fftSize=1024;masterAnalyser.smoothingTimeConstant=0.35;
   masterGain.connect(masterAnalyser);
   masterTimeData=new Uint8Array(masterAnalyser.fftSize);
   STEMS.forEach(s=>{
     const g=actx.createGain();g.gain.value=1;
+    g.channelCount=2;g.channelCountMode='explicit';g.channelInterpretation='speakers';
     const an=actx.createAnalyser();an.fftSize=256;an.smoothingTimeConstant=0.75;
     g.connect(an);an.connect(masterGain);
     gainNodes[s.id]=g;analyserNodes[s.id]=an;
@@ -402,7 +416,9 @@ function spawnSrc(id,offset=0){
   if(!buffers[id])return;
   try{srcNodes[id]?.stop();srcNodes[id]?.disconnect();}catch(e){}
   const src=actx.createBufferSource();
-  src.buffer=buffers[id];src.connect(gainNodes[id]);
+  src.buffer=buffers[id];
+  src.channelCount=2;src.channelCountMode='explicit';src.channelInterpretation='speakers';
+  src.connect(gainNodes[id]);
   src.start(0,Math.max(0,offset%buffers[id].duration));
   srcNodes[id]=src;
 }
