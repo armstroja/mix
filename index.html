@@ -373,34 +373,37 @@ function initCtx(){
   // can be >2 (e.g. 4 on some MacBooks), and Safari mishandles the
   // stereo->N-channel "speakers" downmix in that case — audio collapses
   // to mono or gets misrouted. AirPods report maxChannelCount 2, so this
-  // silently "works" there while breaking on built-in speakers. Force the
-  // destination to explicit stereo so the downmix never kicks in.
-  actx.destination.channelCount=2;
-  actx.destination.channelCountMode='explicit';
-  actx.destination.channelInterpretation='speakers';
-
+  // silently "works" there while breaking on built-in speakers.
+  //
+  // Best-effort fix: hard-wire L/R via a splitter/merger and force
+  // explicit stereo on destination/masterGain. Any of these calls can
+  // throw on some WebKit builds (e.g. channelCount momentarily exceeding
+  // a reported maxChannelCount) — wrapped so a throw here falls back to
+  // a plain connection instead of silently killing all audio.
   masterGain=actx.createGain();masterGain.gain.value=1;
-  masterGain.channelCount=2;masterGain.channelCountMode='explicit';masterGain.channelInterpretation='speakers';
+  let stereoFixOk=false;
+  try{
+    actx.destination.channelCount=2;
+    actx.destination.channelCountMode='explicit';
+    actx.destination.channelInterpretation='speakers';
+    masterGain.channelCount=2;masterGain.channelCountMode='explicit';masterGain.channelInterpretation='speakers';
+    const splitter=actx.createChannelSplitter(2);
+    const merger=actx.createChannelMerger(2);
+    masterGain.connect(splitter);
+    splitter.connect(merger,0,0);
+    splitter.connect(merger,1,1);
+    merger.connect(actx.destination);
+    stereoFixOk=true;
+  }catch(err){
+    console.warn('[stem-mixer] stereo-fix routing failed, falling back:',err);
+  }
+  if(!stereoFixOk)masterGain.connect(actx.destination);
 
-  // Safari's destination.channelCount setter is unreliable — on internal
-  // speakers it can silently keep the hardware's native channel count
-  // (often >2) and apply its own "speakers" layout upmix, which garbles
-  // or collapses true stereo content. Hard-wire L/R through an explicit
-  // splitter/merger so channel 0→0 and 1→1 regardless of what the
-  // destination reports, bypassing that upmix logic entirely.
-  const splitter=actx.createChannelSplitter(2);
-  const merger=actx.createChannelMerger(2);
-  merger.channelInterpretation='discrete';
-  masterGain.connect(splitter);
-  splitter.connect(merger,0,0);
-  splitter.connect(merger,1,1);
-  merger.connect(actx.destination);
   masterAnalyser=actx.createAnalyser();masterAnalyser.fftSize=1024;masterAnalyser.smoothingTimeConstant=0.35;
   masterGain.connect(masterAnalyser);
   masterTimeData=new Uint8Array(masterAnalyser.fftSize);
   STEMS.forEach(s=>{
     const g=actx.createGain();g.gain.value=1;
-    g.channelCount=2;g.channelCountMode='explicit';g.channelInterpretation='speakers';
     const an=actx.createAnalyser();an.fftSize=256;an.smoothingTimeConstant=0.75;
     g.connect(an);an.connect(masterGain);
     gainNodes[s.id]=g;analyserNodes[s.id]=an;
@@ -430,7 +433,6 @@ function spawnSrc(id,offset=0){
   try{srcNodes[id]?.stop();srcNodes[id]?.disconnect();}catch(e){}
   const src=actx.createBufferSource();
   src.buffer=buffers[id];
-  src.channelCount=2;src.channelCountMode='explicit';src.channelInterpretation='speakers';
   src.connect(gainNodes[id]);
   src.start(0,Math.max(0,offset%buffers[id].duration));
   srcNodes[id]=src;
