@@ -381,7 +381,20 @@ function initCtx(){
 
   masterGain=actx.createGain();masterGain.gain.value=1;
   masterGain.channelCount=2;masterGain.channelCountMode='explicit';masterGain.channelInterpretation='speakers';
-  masterGain.connect(actx.destination);
+
+  // Safari's destination.channelCount setter is unreliable — on internal
+  // speakers it can silently keep the hardware's native channel count
+  // (often >2) and apply its own "speakers" layout upmix, which garbles
+  // or collapses true stereo content. Hard-wire L/R through an explicit
+  // splitter/merger so channel 0→0 and 1→1 regardless of what the
+  // destination reports, bypassing that upmix logic entirely.
+  const splitter=actx.createChannelSplitter(2);
+  const merger=actx.createChannelMerger(2);
+  merger.channelInterpretation='discrete';
+  masterGain.connect(splitter);
+  splitter.connect(merger,0,0);
+  splitter.connect(merger,1,1);
+  merger.connect(actx.destination);
   masterAnalyser=actx.createAnalyser();masterAnalyser.fftSize=1024;masterAnalyser.smoothingTimeConstant=0.35;
   masterGain.connect(masterAnalyser);
   masterTimeData=new Uint8Array(masterAnalyser.fftSize);
