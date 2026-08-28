@@ -1,1 +1,407 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>split</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Anton&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#000; --fg:#fff; --dim:#666; --line:#222;
+  }
+  *{box-sizing:border-box;}
+  html,body{background:var(--bg);color:var(--fg);margin:0;min-height:100%;}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif;
+    display:flex;flex-direction:column;align-items:center;
+    padding:8vh 24px 10vh;
+  }
+  h1{
+    font-family:"Anton",sans-serif;
+    font-weight:400;
+    font-size:clamp(40px,10vw,72px);
+    letter-spacing:-1px;
+    margin:0 0 6vh;
+    text-transform:lowercase;
+  }
+  .disclaimer{
+    font-size:11px;color:var(--dim);letter-spacing:.05em;
+    text-transform:uppercase;margin:-4vh 0 6vh;
+  }
+  .col{width:100%;max-width:480px;}
 
+  .drop{
+    border:1px dashed var(--line);
+    padding:40px 16px;
+    text-align:center;
+    color:var(--dim);
+    font-size:14px;
+    cursor:pointer;
+    user-select:none;
+  }
+  .drop.drag{border-color:var(--fg);color:var(--fg);}
+  .drop.has-file{border-style:solid;border-color:var(--fg);color:var(--fg);}
+  input[type=file]{display:none;}
+
+  .row{
+    display:flex;align-items:center;justify-content:space-between;
+    margin-top:28px;
+  }
+  button{
+    background:none;border:1px solid var(--fg);color:var(--fg);
+    font:inherit;font-size:14px;padding:12px 20px;
+    cursor:pointer;letter-spacing:.02em;flex:1;
+  }
+  button:disabled{border-color:var(--line);color:var(--line);cursor:default;}
+  button + button{margin-left:10px;}
+
+  .bar{
+    height:2px;background:var(--line);margin-top:14px;position:relative;overflow:hidden;
+  }
+  .bar > i{
+    display:block;height:100%;width:0%;background:var(--fg);
+    transition:width .15s linear;
+  }
+  .status{
+    margin-top:10px;font-size:12px;color:var(--dim);
+    min-height:16px;white-space:pre-line;
+  }
+
+  .stems{margin-top:40px;display:none;}
+  .stems.show{display:block;}
+  .stem{
+    border-top:1px solid var(--line);
+    padding:16px 0;
+    display:flex;flex-direction:column;gap:8px;
+  }
+  .stem .name{font-size:13px;letter-spacing:.08em;text-transform:uppercase;}
+  audio{width:100%;height:32px;filter:invert(1);}
+  a.dl{color:var(--fg);font-size:12px;text-decoration:underline;text-underline-offset:3px;}
+
+  footer{
+    margin-top:auto;padding-top:10vh;
+    font-size:11px;color:var(--line);
+  }
+</style>
+</head>
+<body>
+
+  <h1>split</h1>
+  <div class="disclaimer">testing only — not for production use</div>
+
+  <div class="col">
+    <div class="drop" id="drop">
+      drop a song, or tap to choose<br>
+      <span id="fileName" style="color:var(--fg)"></span>
+    </div>
+    <input type="file" id="fileInput" accept="audio/*">
+
+    <div class="row">
+      <button id="loadBtn">load model (166mb)</button>
+      <button id="runBtn" disabled>separate</button>
+    </div>
+
+    <div class="bar"><i id="bar"></i></div>
+    <div class="status" id="status">idle</div>
+
+    <div class="stems" id="stems"></div>
+  </div>
+
+  <footer>htdemucs · onnxruntime-web · runs entirely in your browser</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.0/dist/ort.min.js"></script>
+<script>
+"use strict";
+
+const MODEL_URL = "https://huggingface.co/StemSplitio/htdemucs-onnx/resolve/main/htdemucs_fp16weights.onnx";
+const CACHE_NAME = "split-model-cache-v1";
+const SR = 44100;
+const SEGMENT = 343980;          // fixed model input length (~7.8s @ 44.1kHz)
+const OVERLAP = 0.25;
+const HOP = Math.floor(SEGMENT * (1 - OVERLAP));
+const STEM_NAMES = ["drums", "bass", "other", "vocals"];
+
+const $ = (id) => document.getElementById(id);
+const drop = $("drop"), fileInput = $("fileInput"), fileNameEl = $("fileName");
+const loadBtn = $("loadBtn"), runBtn = $("runBtn");
+const bar = $("bar"), statusEl = $("status"), stemsEl = $("stems");
+
+let session = null;
+let audioBuffer = null; // decoded, resampled to 44.1k stereo
+
+function setStatus(s){ statusEl.textContent = s; }
+function setProgress(p){ bar.style.width = Math.max(0, Math.min(1, p)) * 100 + "%"; }
+
+// ---------- file input ----------
+
+drop.addEventListener("click", () => fileInput.click());
+["dragenter","dragover"].forEach(ev =>
+  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("drag"); }));
+["dragleave","drop"].forEach(ev =>
+  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("drag"); }));
+drop.addEventListener("drop", e => {
+  const f = e.dataTransfer.files[0];
+  if (f) handleFile(f);
+});
+fileInput.addEventListener("change", e => {
+  const f = e.target.files[0];
+  if (f) handleFile(f);
+});
+
+async function handleFile(file){
+  fileNameEl.textContent = file.name;
+  drop.classList.add("has-file");
+  setStatus("decoding audio…");
+  try{
+    audioBuffer = await decodeAndResample(file);
+    setStatus(`ready — ${audioBuffer.length} samples / ${(audioBuffer.length/SR).toFixed(1)}s`);
+    updateRunEnabled();
+  }catch(err){
+    console.error(err);
+    setStatus("couldn't decode that file: " + err.message);
+  }
+}
+
+async function decodeAndResample(file){
+  const arr = await file.arrayBuffer();
+  const tmpCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const decoded = await tmpCtx.decodeAudioData(arr.slice(0));
+  tmpCtx.close();
+
+  if (decoded.sampleRate === SR && decoded.numberOfChannels === 2){
+    return { left: decoded.getChannelData(0).slice(), right: decoded.getChannelData(1).slice(), length: decoded.length };
+  }
+
+  const offline = new OfflineAudioContext(2, Math.ceil(decoded.duration * SR), SR);
+  const src = offline.createBufferSource();
+  src.buffer = decoded;
+  src.connect(offline.destination);
+  src.start();
+  const rendered = await offline.startRendering();
+  return { left: rendered.getChannelData(0).slice(), right: rendered.getChannelData(1).slice(), length: rendered.length };
+}
+
+// ---------- model loading (cached in browser via Cache Storage) ----------
+
+loadBtn.addEventListener("click", loadModel);
+
+async function fetchModelBytes(){
+  const cache = await caches.open(CACHE_NAME);
+  let res = await cache.match(MODEL_URL);
+  if (res){
+    setStatus("loading cached model…");
+    return await res.arrayBuffer();
+  }
+
+  setStatus("downloading model (166mb, first time only)…");
+  res = await fetch(MODEL_URL);
+  if (!res.ok) throw new Error("model fetch failed: " + res.status);
+
+  const total = Number(res.headers.get("content-length")) || 0;
+  const reader = res.body.getReader();
+  const chunks = [];
+  let received = 0;
+  while (true){
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.length;
+    if (total) setProgress(received / total);
+  }
+  const buf = new Uint8Array(received);
+  let offset = 0;
+  for (const c of chunks){ buf.set(c, offset); offset += c.length; }
+
+  // cache for next time (best-effort; ignore quota errors)
+  try{
+    await cache.put(MODEL_URL, new Response(buf, { headers: { "Content-Type": "application/octet-stream" } }));
+  }catch(e){ console.warn("model caching skipped:", e); }
+
+  return buf.buffer;
+}
+
+async function loadModel(){
+  loadBtn.disabled = true;
+  try{
+    const modelBytes = await fetchModelBytes();
+    setProgress(0);
+    setStatus("initializing inference session…");
+
+    try{
+      session = await ort.InferenceSession.create(modelBytes, { executionProviders: ["webgpu"] });
+      setStatus("model loaded (webgpu)");
+    }catch(e){
+      console.warn("webgpu unavailable, falling back to wasm:", e);
+      session = await ort.InferenceSession.create(modelBytes, { executionProviders: ["wasm"] });
+      setStatus("model loaded (wasm — webgpu unavailable, this will be slower)");
+    }
+
+    loadBtn.textContent = "model loaded";
+    updateRunEnabled();
+  }catch(err){
+    console.error(err);
+    setStatus("model load failed: " + err.message);
+    loadBtn.disabled = false;
+  }
+}
+
+function updateRunEnabled(){
+  runBtn.disabled = !(session && audioBuffer);
+}
+
+// ---------- separation ----------
+
+runBtn.addEventListener("click", separate);
+
+async function separate(){
+  runBtn.disabled = true;
+  loadBtn.disabled = true;
+  stemsEl.classList.remove("show");
+  stemsEl.innerHTML = "";
+
+  try{
+    const { left, right, length } = audioBuffer;
+    const numChunks = Math.max(1, Math.ceil((length - SEGMENT) / HOP) + 1);
+
+    // output accumulators: 4 stems x 2 channels
+    const outs = STEM_NAMES.map(() => [new Float32Array(length), new Float32Array(length)]);
+    const weight = new Float32Array(length);
+    const win = crossfadeWindow(SEGMENT, OVERLAP);
+
+    for (let c = 0; c < numChunks; c++){
+      const start = c * HOP;
+      setStatus(`separating… chunk ${c + 1}/${numChunks}`);
+      setProgress(c / numChunks);
+
+      const inputData = new Float32Array(2 * SEGMENT);
+      for (let i = 0; i < SEGMENT; i++){
+        const s = start + i;
+        inputData[i] = s < length ? left[s] : 0;              // channel 0
+        inputData[SEGMENT + i] = s < length ? right[s] : 0;   // channel 1
+      }
+
+      const tensor = new ort.Tensor("float32", inputData, [1, 2, SEGMENT]);
+      const inputName = session.inputNames[0];
+      const outputName = session.outputNames[0];
+      const result = await session.run({ [inputName]: tensor });
+      const stemsData = result[outputName].data; // (1,4,2,SEGMENT) flattened
+
+      for (let stemIdx = 0; stemIdx < 4; stemIdx++){
+        for (let ch = 0; ch < 2; ch++){
+          const base = (stemIdx * 2 + ch) * SEGMENT;
+          const outCh = outs[stemIdx][ch];
+          for (let i = 0; i < SEGMENT; i++){
+            const s = start + i;
+            if (s >= length) break;
+            outCh[s] += stemsData[base + i] * win[i];
+          }
+        }
+      }
+      for (let i = 0; i < SEGMENT; i++){
+        const s = start + i;
+        if (s >= length) break;
+        weight[s] += win[i];
+      }
+
+      // let the UI paint between chunks
+      await new Promise(r => setTimeout(r, 0));
+    }
+
+    // normalize by accumulated window weight
+    for (let stemIdx = 0; stemIdx < 4; stemIdx++){
+      for (let ch = 0; ch < 2; ch++){
+        const outCh = outs[stemIdx][ch];
+        for (let i = 0; i < length; i++){
+          if (weight[i] > 1e-8) outCh[i] /= weight[i];
+        }
+      }
+    }
+
+    setProgress(1);
+    setStatus("done");
+    renderStems(outs);
+  }catch(err){
+    console.error(err);
+    setStatus("separation failed: " + err.message);
+  }finally{
+    runBtn.disabled = false;
+    loadBtn.disabled = false;
+  }
+}
+
+// linear crossfade window: ramps up/down over the overlap region, flat in the middle
+function crossfadeWindow(len, overlap){
+  const w = new Float32Array(len).fill(1);
+  const rampLen = Math.floor(len * overlap / 2);
+  for (let i = 0; i < rampLen; i++){
+    const v = i / rampLen;
+    w[i] = v;
+    w[len - 1 - i] = v;
+  }
+  return w;
+}
+
+// ---------- output: render + wav download ----------
+
+function renderStems(outs){
+  stemsEl.innerHTML = "";
+  STEM_NAMES.forEach((name, idx) => {
+    const [l, r] = outs[idx];
+    const wavBlob = encodeWav(l, r, SR);
+    const url = URL.createObjectURL(wavBlob);
+
+    const div = document.createElement("div");
+    div.className = "stem";
+    div.innerHTML = `
+      <div class="name">${name}</div>
+      <audio controls src="${url}"></audio>
+      <a class="dl" href="${url}" download="${name}.wav">download ${name}.wav</a>
+    `;
+    stemsEl.appendChild(div);
+  });
+  stemsEl.classList.add("show");
+}
+
+function encodeWav(left, right, sampleRate){
+  const numFrames = left.length;
+  const bytesPerSample = 2;
+  const blockAlign = 2 * bytesPerSample; // stereo
+  const dataSize = numFrames * blockAlign;
+  const buf = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buf);
+
+  writeStr(view, 0, "RIFF");
+  view.setUint32(4, 36 + dataSize, true);
+  writeStr(view, 8, "WAVE");
+  writeStr(view, 12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);          // PCM
+  view.setUint16(22, 2, true);          // channels
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * blockAlign, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, 16, true);         // bits per sample
+  writeStr(view, 36, "data");
+  view.setUint32(40, dataSize, true);
+
+  let offset = 44;
+  for (let i = 0; i < numFrames; i++){
+    view.setInt16(offset, floatToInt16(left[i]), true); offset += 2;
+    view.setInt16(offset, floatToInt16(right[i]), true); offset += 2;
+  }
+
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+function floatToInt16(f){
+  const s = Math.max(-1, Math.min(1, f));
+  return s < 0 ? s * 0x8000 : s * 0x7fff;
+}
+
+function writeStr(view, offset, str){
+  for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+}
+</script>
+</body>
+</html>
