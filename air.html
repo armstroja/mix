@@ -177,19 +177,23 @@ function wantHQ(){
 }
 
 // ── Pexels: bring your own API key ────────────────────────────────
-// The key, search term and the chosen video's file list all live in localStorage on
-// this device. The key is only ever sent to api.pexels.com. After the first pick there
-// are no more API calls: reloads reuse the cached video until you hit "go" or "reset".
+// One search fetches a shuffled playlist of up to 10 clips. The key, search term and
+// playlist (with the current position) live in localStorage on this device; the key is
+// only ever sent to api.pexels.com. After that first fetch there are no more API calls:
+// reloads resume the cached playlist until you hit "go" (new playlist) or "reset".
 const LS_KEY='mixerair:pexels';
 let px={};
 try{px=JSON.parse(localStorage.getItem(LS_KEY)||'null')||{};}catch(e){}
+delete px.pick;                     // old single-video cache format
 const savePx=()=>{try{localStorage.setItem(LS_KEY,JSON.stringify(px));}catch(e){}};
 const bgPanel=$('bgpanel'),bgToggle=$('bgbtn'),keyIn=$('pxkey'),qIn=$('pxq'),statEl=$('bgstat'),creditEl=$('credit');
 const setStat=t=>{statEl.textContent=t;};
 const safeUrl=u=>(typeof u==='string'&&u.startsWith('https://'))?u:'#';
+const cur=()=>px.list&&px.list[px.idx||0];
+let playlist=false;                 // true while stepping through several Pexels clips
 
 function showCredit(){
-  const p=px.pick;
+  const p=cur();
   if(!p){creditEl.hidden=true;return;}
   const n=$('creditName');
   n.textContent=p.name||'unknown';n.href=safeUrl(p.by);
@@ -197,23 +201,24 @@ function showCredit(){
   creditEl.hidden=false;
 }
 
-async function pexelsPick(){
+async function pexelsFetch(){
   const qs=new URLSearchParams({
     query:px.q||'abstract',orientation:'landscape',size:'medium',
-    min_duration:'5',max_duration:'30',per_page:'30'
+    min_duration:'5',max_duration:'30',per_page:'40'
   });
   const r=await fetch('https://api.pexels.com/videos/search?'+qs,{headers:{Authorization:px.key}});
-  if(r.status===401||r.status===403){px.key='';px.pick=null;savePx();throw new Error('key rejected');}
+  if(r.status===401||r.status===403){px.key='';px.list=null;savePx();throw new Error('key rejected');}
   if(!r.ok)throw new Error('pexels error '+r.status);
-  const list=(await r.json()).videos||[];
-  if(!list.length)throw new Error('no results for \u201c'+(px.q||'abstract')+'\u201d');
-  const v=list[Math.floor(Math.random()*list.length)];
-  const files=(v.video_files||[])
-    .filter(f=>f.file_type==='video/mp4'&&f.width)
-    .map(f=>({w:f.width,l:f.link}))
-    .sort((a,b)=>a.w-b.w);
-  if(!files.length)throw new Error('no playable files');
-  px.pick={id:v.id,page:v.url,name:v.user&&v.user.name,by:v.user&&v.user.url,files};
+  const vids=((await r.json()).videos||[]).map(v=>({
+    id:v.id,page:v.url,name:v.user&&v.user.name,by:v.user&&v.user.url,
+    files:(v.video_files||[])
+      .filter(f=>f.file_type==='video/mp4'&&f.width)
+      .map(f=>({w:f.width,l:f.link}))
+      .sort((a,b)=>a.w-b.w)
+  })).filter(v=>v.files.length);
+  if(!vids.length)throw new Error('no results for \u201c'+(px.q||'abstract')+'\u201d');
+  for(let i=vids.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[vids[i],vids[j]]=[vids[j],vids[i]];}
+  px.list=vids.slice(0,10);px.idx=0;
   savePx();
 }
 // smallest mp4 that's at least the target width, else the biggest available
@@ -226,32 +231,55 @@ async function resolveBg(){
   const hq=wantHQ();
   if(px.key){
     try{
-      if(!px.pick){setStat('fetching\u2026');await pexelsPick();}
+      if(!px.list||!px.list.length){setStat('fetching\u2026');await pexelsFetch();}
       setStat('');showCredit();
-      return chooseFile(px.pick.files,hq);
+      playlist=px.list.length>1;
+      return chooseFile(cur().files,hq);
     }catch(e){
       console.warn('Pexels:',e);
       setStat(String(e.message||e));
     }
   }
-  creditEl.hidden=true;
+  playlist=false;creditEl.hidden=true;
   return hq?BG_HQ:BG_SD;
 }
 async function applyBg(){
   bgLoaded=true;
   const src=await resolveBg();
+  bgVid.loop=!playlist;             // single/local video loops; a playlist advances instead
   bgVid.src=src;
   bgSync();
 }
+// Move to the next clip (wraps around). Only fires while a clip is actually playing,
+// so a paused or hidden page never loads more video in the background.
+function advance(){
+  if(!px.list||!px.list.length)return;
+  px.idx=((px.idx||0)+1)%px.list.length;
+  savePx();showCredit();
+  bgVid.src=chooseFile(cur().files,wantHQ());
+  bgSync();
+}
+bgVid.addEventListener('ended',()=>{if(playlist)advance();});
 
-// If the chosen file fails (missing HQ file, expired Pexels link...), drop to the SD file.
+// If a file fails (missing HQ file, expired Pexels link...): skip that clip, or if the
+// whole playlist is dead, drop to the local SD file.
 bgVid.addEventListener('error',()=>{
   const src=bgVid.getAttribute('src');
   if(src===BG_SD){console.warn(BG_SD+' not found next to this file');return;}
-  if(px.pick&&px.pick.files.some(f=>f.l===src)){
-    px.pick=null;savePx();creditEl.hidden=true;   // stale link: re-pick next load
-    setStat('pexels link failed, using local file');
+  const i=px.list?px.list.findIndex(v=>v.files.some(f=>f.l===src)):-1;
+  if(i>-1){
+    px.list.splice(i,1);
+    if(px.list.length){
+      px.idx=i%px.list.length;savePx();
+      playlist=px.list.length>1;bgVid.loop=!playlist;
+      showCredit();
+      bgVid.src=chooseFile(cur().files,wantHQ());
+      bgSync();return;
+    }
+    px.list=null;savePx();creditEl.hidden=true;
+    setStat('pexels links failed, using local file');
   }
+  playlist=false;bgVid.loop=true;
   bgVid.src=BG_SD;bgSync();
 });
 
@@ -268,7 +296,7 @@ $('pxgo').addEventListener('click',async()=>{
   if(k)px.key=k;
   if(!px.key){setStat('paste your pexels api key first');return;}
   px.q=qIn.value.trim()||'abstract';
-  px.pick=null;savePx();keyIn.value='';
+  px.list=null;px.idx=0;savePx();keyIn.value='';
   await applyBg();
   if(!statEl.textContent)bgPanel.hidden=true;   // stay open only if something went wrong
 });
@@ -279,6 +307,20 @@ $('pxreset').addEventListener('click',()=>{
   bgPanel.hidden=true;
   applyBg();
 });
+
+// ── Keep audio independent of the video ───────────────────────────
+// The background is decorative only: force it silent, ask iOS for a media audio
+// session, and if a clip starting makes the browser suspend or interrupt the
+// AudioContext (Safari does this), resume it straight away.
+bgVid.muted=true;bgVid.defaultMuted=true;bgVid.volume=0;
+try{if(navigator.audioSession)navigator.audioSession.type='playback';}catch(e){}
+function keepAlive(){
+  if(playing&&ctx&&ctx.state!=='running')ctx.resume().catch(()=>{});
+}
+['play','playing','loadeddata','volumechange'].forEach(ev=>bgVid.addEventListener(ev,()=>{
+  if(!bgVid.muted)bgVid.muted=true;
+  keepAlive();
+}));
 
 // ── UI ────────────────────────────────────────────────────────────
 STEMS.forEach(id=>{
@@ -310,6 +352,7 @@ function refresh(id){
 function ensureCtx(){
   if(ctx)return;
   ctx=new(window.AudioContext||window.webkitAudioContext)({latencyHint:'playback'});
+  ctx.onstatechange=keepAlive;
   STEMS.forEach(id=>{
     const g=ctx.createGain();g.connect(ctx.destination);
     st[id].gain=g;applyGain(id);
@@ -357,7 +400,8 @@ function play(){
     playing=true;dot.classList.add('playing');
     bgSync();startTimer();
   };
-  ctx.state==='running' ? go() : ctx.resume().then(go,go);
+  if(ctx.state!=='running')ctx.resume().catch(()=>{}); // don't wait on it: Safari can leave the promise hanging
+  go();
 }
 function pause(){
   if(!playing)return;
