@@ -12,7 +12,9 @@
   --dot-on:rgba(255,255,255,.22);
   --shadow:0 0 8px rgba(0,0,0,.35);
 }
-#bg{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;z-index:-1;background:#000;pointer-events:none;}
+/* object-fit:none = play at the file's own pixel size, centred, and let the
+   viewport crop whatever hangs off the edges. No scaling either way. */
+#bg{position:fixed;inset:0;width:100%;height:100%;object-fit:none;object-position:center;z-index:-1;background:#000;pointer-events:none;}
 html,body{height:100%;}
 body{
   background:#000;color:var(--ink);
@@ -28,7 +30,7 @@ body.drag #app{opacity:.55;}
 .strip.muted .seg{opacity:.25;}
 .seg{
   width:52px;height:15px;border:none;border-radius:6px;cursor:pointer;
-  background:var(--seg-off);box-shadow:0 0 10px rgba(0,0,0,.18);
+  background:var(--seg-off);
   transition:background .06s,transform .1s,opacity .2s;
 }
 .seg.on{background:var(--seg-on);}
@@ -53,18 +55,22 @@ body.drag #app{opacity:.55;}
 #bar{flex:1;position:relative;height:23px;cursor:pointer;touch-action:none;}
 #bar::before{content:'';position:absolute;left:0;right:0;top:11px;height:1px;background:var(--line);}
 #fill{
-  position:absolute;left:0;right:0;top:11px;height:1px;background:rgba(255,255,255,.9);box-shadow:var(--shadow);
-  transform-origin:left;transform:scaleX(0);
+  position:absolute;left:0;right:0;top:11px;height:1px;background:rgba(255,255,255,.9);
+  transform-origin:left;transform:scaleX(0);will-change:transform;
+  transition:transform .25s linear;
 }
+#fill.jump{transition:none;}
 #time{text-shadow:var(--shadow);font-size:9px;letter-spacing:.08em;color:var(--faint);min-width:64px;text-align:right;font-variant-numeric:tabular-nums;}
 #hint{text-shadow:var(--shadow);font-size:8px;letter-spacing:.22em;text-transform:uppercase;color:var(--faint);height:10px;}
 button:focus-visible,#dot:focus-visible{outline:1px solid var(--seg-on);outline-offset:3px;}
+@media (prefers-reduced-motion:reduce){#fill{transition:none;}}
 </style>
 </head>
 <body>
 
-<!-- Background video: background.mp4 sits in the same folder as this HTML file -->
-<video id="bg" src="background.mp4" autoplay muted loop playsinline></video>
+<!-- background.mp4 sits in the same folder as this file. preload=none keeps it off
+     the wire until the user actually starts playback. -->
+<video id="bg" muted loop playsinline preload="none" disablepictureinpicture disableremoteplayback></video>
 
 <div id="app">
   <div id="cols"></div>
@@ -87,10 +93,16 @@ const KEYWORDS={
   other: ['other','inst','guitar','piano','keys','synth','pad','string','horn','brass','fx','misc'],
 };
 
+// ── Power settings ────────────────────────────────────────────────
+const BG_SRC        = 'background.mp4';
+const BG_WHILE_IDLE = false;  // false: video only rolls while audio is playing
+const TICK_MS       = 250;    // progress updates per second = 1000/TICK_MS
+const IDLE_SUSPEND  = 20000;  // ms of pause before the audio hardware is released
+
 let ctx=null;
 const st={};
 STEMS.forEach(id=>{st[id]={buf:null,gain:null,src:null,vol:STEPS,prev:STEPS,muted:false};});
-let playing=false,startT=0,offset=0,dur=0,raf=0;
+let playing=false,startT=0,offset=0,dur=0,timer=0,idleT=0;
 
 const $=id=>document.getElementById(id);
 const dot=$('dot'),fillEl=$('fill'),timeEl=$('time'),barEl=$('bar'),hintEl=$('hint'),fileEl=$('file');
@@ -98,14 +110,17 @@ const strips={},segs={},fnEls={};
 const bgVid=$('bg');
 
 // ── Background video ──────────────────────────────────────────────
-// Loaded from background.mp4 next to this file (relative path, no leading slash).
-bgVid.muted=true;               // required for autoplay in most browsers
-bgVid.play().catch(()=>{        // if autoplay is blocked, start on first interaction
-  const kick=()=>{bgVid.play().catch(()=>{});};
-  window.addEventListener('pointerdown',kick,{once:true});
-  window.addEventListener('keydown',kick,{once:true});
-});
-bgVid.addEventListener('error',()=>console.warn('background.mp4 not found next to this HTML file'));
+// Decoding video is the single biggest battery cost here, so it only runs
+// when it can actually be seen and (optionally) only while audio plays.
+let bgLoaded=false;
+function bgPlay(){
+  if(document.hidden)return;
+  if(!bgLoaded){bgVid.src=BG_SRC;bgLoaded=true;}
+  bgVid.play().catch(()=>{});
+}
+function bgPause(){if(bgLoaded)bgVid.pause();}
+function bgSync(){ (playing||BG_WHILE_IDLE) ? bgPlay() : bgPause(); }
+bgVid.addEventListener('error',()=>console.warn('background.mp4 not found next to this file'));
 
 // ── UI ────────────────────────────────────────────────────────────
 STEMS.forEach(id=>{
@@ -136,7 +151,7 @@ function refresh(id){
 // ── Audio ─────────────────────────────────────────────────────────
 function ensureCtx(){
   if(ctx)return;
-  ctx=new(window.AudioContext||window.webkitAudioContext)();
+  ctx=new(window.AudioContext||window.webkitAudioContext)({latencyHint:'playback'});
   STEMS.forEach(id=>{
     const g=ctx.createGain();g.connect(ctx.destination);
     st[id].gain=g;applyGain(id);
@@ -161,6 +176,7 @@ function toggleMute(id){
 function stopSrc(id){
   const s=st[id];
   try{s.src&&s.src.stop();}catch(e){}
+  if(s.src){s.src.onended=null;s.src.disconnect();}
   s.src=null;
 }
 function spawn(id,off){
@@ -175,19 +191,25 @@ function hasAny(){return STEMS.some(id=>st[id].buf);}
 function pos(){return playing?ctx.currentTime-startT:offset;}
 
 function play(){
-  if(!hasAny())return;
-  ensureCtx();if(ctx.state==='suspended')ctx.resume();
-  STEMS.forEach(id=>spawn(id,offset));
-  startT=ctx.currentTime-offset;
-  playing=true;dot.classList.add('playing');
-  cancelAnimationFrame(raf);tick();
+  if(!hasAny()||playing)return;
+  ensureCtx();clearTimeout(idleT);
+  const go=()=>{
+    STEMS.forEach(id=>spawn(id,offset));
+    startT=ctx.currentTime-offset;
+    playing=true;dot.classList.add('playing');
+    bgSync();startTimer();
+  };
+  ctx.state==='running' ? go() : ctx.resume().then(go,go);
 }
 function pause(){
   if(!playing)return;
   offset=ctx.currentTime-startT;
   STEMS.forEach(stopSrc);
   playing=false;dot.classList.remove('playing');
-  cancelAnimationFrame(raf);
+  stopTimer();render(offset,true);bgSync();
+  // nothing is making sound: hand the audio hardware back after a while
+  clearTimeout(idleT);
+  idleT=setTimeout(()=>{if(!playing&&ctx&&ctx.state==='running')ctx.suspend();},IDLE_SUSPEND);
 }
 function toggle(){
   if(!hasAny()){pick(null);return;}
@@ -198,26 +220,39 @@ function seek(t){
   t=Math.max(0,Math.min(dur-0.05,t));
   const was=playing;
   if(was)pause();
-  offset=t;render(t);
+  offset=t;render(t,true);
   if(was)play();
 }
 
 // ── Progress ──────────────────────────────────────────────────────
+// A 4 Hz timer plus a CSS transition on the bar, instead of a 60 fps
+// requestAnimationFrame loop. Same look, ~15x fewer wakeups, and it keeps
+// running when the tab is backgrounded (rAF does not).
 function fmt(s){const m=Math.floor(s/60),c=Math.floor(s%60);return m+':'+(c<10?'0':'')+c;}
-function render(p){
+let lastSec=-1;
+function render(p,jump){
+  fillEl.classList.toggle('jump',!!jump);
   fillEl.style.transform='scaleX('+(dur?Math.min(1,p/dur):0)+')';
-  timeEl.textContent=dur?fmt(p)+' / '+fmt(dur):'–:–– / –:––';
+  const sec=Math.floor(p);
+  if(sec!==lastSec||!dur){                       // only touch the DOM text once a second
+    lastSec=sec;
+    timeEl.textContent=dur?fmt(p)+' / '+fmt(dur):'–:–– / –:––';
+  }
 }
+function startTimer(){stopTimer();timer=setInterval(tick,TICK_MS);tick();}
+function stopTimer(){clearInterval(timer);timer=0;}
 function tick(){
   if(!playing)return;
   const p=pos();
   if(p>=dur){ // reached the end: stop and rewind
     STEMS.forEach(stopSrc);
     playing=false;offset=0;dot.classList.remove('playing');
-    render(0);return;
+    stopTimer();render(0,true);bgSync();
+    clearTimeout(idleT);
+    idleT=setTimeout(()=>{if(!playing&&ctx&&ctx.state==='running')ctx.suspend();},IDLE_SUSPEND);
+    return;
   }
-  render(p);
-  raf=requestAnimationFrame(tick);
+  render(p+TICK_MS/1000);   // aim one tick ahead so the CSS transition lands on time
 }
 
 // scrub: drag or click the line (mouse, touch and pen)
@@ -228,13 +263,13 @@ barEl.addEventListener('pointerdown',e=>{
   barEl.setPointerCapture(e.pointerId);
   scrubbing=true;wasPlaying=playing;
   if(playing)pause();
-  render(pct(e)*dur);
+  render(pct(e)*dur,true);
 });
-barEl.addEventListener('pointermove',e=>{if(scrubbing)render(pct(e)*dur);});
+barEl.addEventListener('pointermove',e=>{if(scrubbing)render(pct(e)*dur,true);});
 barEl.addEventListener('pointerup',e=>{
   if(!scrubbing)return;
   scrubbing=false;
-  offset=pct(e)*dur;render(offset);
+  offset=pct(e)*dur;render(offset,true);
   if(wasPlaying)play();
 });
 barEl.addEventListener('pointercancel',()=>{scrubbing=false;if(wasPlaying)play();});
@@ -268,7 +303,7 @@ async function load(id,file){
     fnEls[id].textContent=file.name.replace(/\.[^.]+$/,'');
     hintEl.textContent='';
     if(playing)spawn(id,pos());
-    if(!playing)render(offset);
+    else{lastSec=-1;render(offset,true);}
   }catch(e){
     console.error(e);
     hintEl.textContent='couldn\u2019t decode '+id;
@@ -300,10 +335,18 @@ window.addEventListener('keydown',e=>{
   const i=['1','2','3','4'].indexOf(e.key);
   if(i>-1)toggleMute(STEMS[i]);
 });
-// resume after a tab switch / route change if the browser suspended audio
+
+// Screen off / app backgrounded: stop decoding video and stop the UI timer.
+// Audio keeps playing; the clock is rebuilt from ctx.currentTime on return.
 document.addEventListener('visibilitychange',()=>{
-  if(!document.hidden&&playing&&ctx&&ctx.state!=='running')ctx.resume();
+  if(document.hidden){bgPause();stopTimer();}
+  else{
+    if(playing&&ctx&&ctx.state!=='running')ctx.resume();
+    bgSync();
+    if(playing)startTimer();
+  }
 });
+bgSync();
 </script>
 </body>
 </html>
