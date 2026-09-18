@@ -71,11 +71,11 @@ body.drag #app{opacity:.55;}
 #time{text-shadow:var(--shadow);font-size:9px;letter-spacing:.08em;color:var(--faint);min-width:64px;text-align:right;font-variant-numeric:tabular-nums;}
 #hint{text-shadow:var(--shadow);font-size:8px;letter-spacing:.22em;text-transform:uppercase;color:var(--faint);height:10px;}
 #bgwrap{display:flex;flex-direction:column;align-items:center;gap:12px;}
-#bgbtn,.pbtn,#bgpanel a{
+#bgbtn,.pbtn{
   background:none;border:none;font-family:inherit;cursor:pointer;text-decoration:none;
   font-size:8px;letter-spacing:.22em;text-transform:uppercase;color:var(--faint);text-shadow:var(--shadow);
 }
-#bgbtn:hover,.pbtn:hover,#bgpanel a:hover{color:var(--ink);}
+#bgbtn:hover,.pbtn:hover{color:var(--ink);}
 #bgpanel{display:flex;flex-direction:column;align-items:center;gap:8px;}
 #bgpanel[hidden]{display:none;}
 #bgpanel input{
@@ -117,12 +117,10 @@ button:focus-visible,#dot:focus-visible{outline:1px solid var(--seg-on);outline-
   <div id="bgwrap">
     <button id="bgbtn" type="button">background</button>
     <div id="bgpanel" hidden>
-      <input id="pxkey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="pexels api key">
       <input id="pxq" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="search: abstract, rain, neon…">
       <div class="prow">
         <button id="pxgo" class="pbtn" type="button">go</button>
         <button id="pxreset" class="pbtn" type="button">reset</button>
-        <a href="https://www.pexels.com/api/" target="_blank" rel="noopener">get a key</a>
       </div>
       <div id="bgstat"></div>
     </div>
@@ -150,6 +148,15 @@ const IDLE_SUSPEND  = 20000;  // ms of pause before the audio hardware is releas
 const TINT          = true;   // tint the stem meters with the video's dominant colour
 const METER_MS      = 66;     // level-meter refresh in ms (~15 fps); raise it to save battery
 const MAX_CLIP_MB     = 12;     // skip Pexels files heavier than this (faster starts); 0 = no cap
+
+// ── Pexels proxy ──────────────────────────────────────────────────
+// Search requests go to your Cloudflare Worker, which adds the API key server-side.
+// No key ever touches this page. Change this to your Worker's URL.
+const PX_API        = 'https://patient-mode-2bc6.optimizedjack.workers.dev/search';
+// The current clip loops until the next one has buffered. Some phones refuse to preload
+// hidden videos, so if the next clip still isn't ready after this long we hand over anyway
+// (the old clip keeps looping on screen until the new one is actually playing).
+const NEXT_WAIT_MS  = 20000;
 
 let ctx=null;
 const st={};
@@ -255,17 +262,18 @@ function wantHQ(){
   return matchMedia('(hover:hover) and (pointer:fine)').matches && innerWidth>=1000;
 }
 
-// ── Pexels: bring your own API key ────────────────────────────────
-// One search fetches a shuffled playlist of up to 10 clips. The key, search term and
-// playlist (with the current position) live in localStorage on this device; the key is
-// only ever sent to api.pexels.com. After that first fetch there are no more API calls:
-// reloads resume the cached playlist until you hit "go" (new playlist) or "reset".
+// ── Pexels (via your Cloudflare Worker) ───────────────────────────
+// One search fetches a shuffled playlist of up to 10 clips. The search term and playlist
+// (with the current position) live in localStorage on this device. After that first fetch
+// there are no more API calls: reloads resume the cached playlist until you hit "go"
+// (new playlist) or "reset".
 const LS_KEY='mixerair:pexels';
 let px={};
 try{px=JSON.parse(localStorage.getItem(LS_KEY)||'null')||{};}catch(e){}
 delete px.pick;                     // old single-video cache format
 const savePx=()=>{try{localStorage.setItem(LS_KEY,JSON.stringify(px));}catch(e){}};
-const bgPanel=$('bgpanel'),bgToggle=$('bgbtn'),keyIn=$('pxkey'),qIn=$('pxq'),statEl=$('bgstat'),creditEl=$('credit');
+if('key' in px){delete px.key;savePx();}   // older builds stored the API key here: scrub it
+const bgPanel=$('bgpanel'),bgToggle=$('bgbtn'),qIn=$('pxq'),statEl=$('bgstat'),creditEl=$('credit');
 const setStat=t=>{statEl.textContent=t;};
 const safeUrl=u=>(typeof u==='string'&&u.startsWith('https://'))?u:'#';
 const cur=()=>px.list&&px.list[px.idx||0];
@@ -285,19 +293,19 @@ async function pexelsFetch(){
     query:px.q||'abstract',orientation:'landscape',size:'medium',
     min_duration:'5',max_duration:'20',per_page:'40'
   });
-  const r=await fetch('https://api.pexels.com/videos/search?'+qs,{headers:{Authorization:px.key}});
-  if(r.status===401||r.status===403){px.key='';px.list=null;savePx();throw new Error('key rejected');}
+  const r=await fetch(PX_API+'?'+qs);
+  if(r.status===429)throw new Error('rate limited, try again later');
   if(!r.ok)throw new Error('pexels error '+r.status);
-  const vids=((await r.json()).videos||[]).map(v=>({
+  const found=((await r.json()).videos||[]).map(v=>({
     id:v.id,page:v.url,name:v.user&&v.user.name,by:v.user&&v.user.url,
     files:(v.video_files||[])
       .filter(f=>f.file_type==='video/mp4'&&f.width)
       .map(f=>({w:f.width,l:f.link,s:f.size||0}))
       .sort((a,b)=>a.w-b.w)
   })).filter(v=>v.files.length);
-  if(!vids.length)throw new Error('no results for \u201c'+(px.q||'abstract')+'\u201d');
-  for(let i=vids.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[vids[i],vids[j]]=[vids[j],vids[i]];}
-  px.list=vids.slice(0,10);px.idx=0;
+  if(!found.length)throw new Error('no results for \u201c'+(px.q||'abstract')+'\u201d');
+  for(let i=found.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[found[i],found[j]]=[found[j],found[i]];}
+  px.list=found.slice(0,10);px.idx=0;
   savePx();
 }
 // smallest mp4 that's at least the target width, else the biggest available
@@ -312,7 +320,7 @@ function chooseFile(files,hq){
 
 async function resolveBg(){
   const hq=wantHQ();
-  if(px.key){
+  if(px.q){                          // Pexels is used once someone has searched
     try{
       if(!px.list||!px.list.length){setStat('fetching\u2026');await pexelsFetch();}
       setStat('');showCredit();
@@ -331,16 +339,19 @@ async function applyBg(){
   const src=await resolveBg();
   clearStandby();
   bgVid.classList.add('show');other().classList.remove('show');
-  bgVid.loop=!playlist;             // single/local video loops; a playlist advances instead
+  bgVid.loop=true;                  // always loops; a playlist hands over once the next clip is ready
   setBgSrc(src);
   bgSync();
 }
-// Double buffering: while a clip plays, the next one is loaded into the hidden second
-// <video>. When the clip ends we swap and cross-fade, so there's no wait for a download.
-// If the next clip isn't ready yet, the finished clip just holds its last frame.
-let standbyIdx=-1,standbyReady=false,pendingSwap=false,swapT=0;
+
+// ── Playlist hand-over (double buffering) ─────────────────────────
+// While a clip plays, the next one is loaded into the hidden second <video>. The current
+// clip LOOPS the whole time. The moment the next clip has buffered, looping is switched
+// off so the current pass finishes cleanly, and 'ended' swaps to the new clip with a
+// cross-fade. So: repeat until the next one is fetched, then move on.
+let standbyIdx=-1,standbyReady=false,swapT=0,retiring=false;
 function clearStandby(){
-  pendingSwap=false;clearTimeout(swapT);standbyIdx=-1;standbyReady=false;
+  clearTimeout(swapT);standbyIdx=-1;standbyReady=false;
   const el=other();el.pause();
   if(el.getAttribute('src')){el.removeAttribute('src');el.load();}   // abort any download
 }
@@ -350,35 +361,46 @@ function prepNext(){
   const src=chooseFile(px.list[nxt].files,wantHQ());
   standbyIdx=nxt;standbyReady=false;
   applyCors(el,src);
-  el.loop=false;el.preload='auto';el.src=src;
+  el.loop=true;el.preload='auto';el.src=src;
+  bgVid.loop=true;                                   // keep repeating until the next clip is buffered
+  clearTimeout(swapT);
+  swapT=setTimeout(()=>{if(standbyIdx===nxt&&!standbyReady)swapTo(nxt);},NEXT_WAIT_MS);
 }
 function swapTo(nxt){
   const inc=other(),out=bgVid;
-  pendingSwap=false;clearTimeout(swapT);
+  clearTimeout(swapT);
   px.idx=nxt;savePx();showCredit();
   bgVid=inc;tintOK=TINT&&inc._tintOK!==false;
+  inc.loop=true;
   standbyIdx=-1;standbyReady=false;
+  retiring=true;                                     // 'out' is still on screen: don't reuse it yet
   // reveal only once the new clip is really playing, then free the old decoder
   inc.addEventListener('playing',()=>{
     inc.classList.add('show');out.classList.remove('show');
-    setTimeout(()=>{if(out!==bgVid){out.pause();out.removeAttribute('src');out.load();}},1000);
+    setTimeout(()=>{
+      retiring=false;
+      if(out!==bgVid&&standbyIdx===-1){out.pause();out.removeAttribute('src');out.load();}
+      if(playlist&&standbyIdx===-1)prepNext();       // now the spare element is free: load the next clip
+    },1000);
   },{once:true});
   bgSync();
 }
 function advance(){
   if(!px.list||px.list.length<2)return;
   const nxt=((px.idx||0)+1)%px.list.length;
+  if(standbyIdx===nxt&&standbyReady){swapTo(nxt);return;}
+  // Shouldn't normally happen (looping stays on until the next clip is ready), but if the
+  // clip ended anyway, just play it again.
+  bgVid.loop=true;bgVid.currentTime=0;bgSync();
   if(standbyIdx!==nxt)prepNext();
-  if(standbyReady){swapTo(nxt);return;}
-  pendingSwap=true;clearTimeout(swapT);
-  swapT=setTimeout(()=>{if(pendingSwap)swapTo(nxt);},2500);   // browsers that won't preload: just go
 }
 // standby element events
 vids.forEach(v=>{
   v.addEventListener('canplay',()=>{
     if(v===bgVid||standbyIdx<0||!v.getAttribute('src'))return;
     standbyReady=true;
-    if(pendingSwap)swapTo(standbyIdx);
+    clearTimeout(swapT);
+    bgVid.loop=false;                                // finish this pass, then 'ended' hands over
   });
   v.addEventListener('error',()=>{
     if(v===bgVid)return;                       // the active one is handled below
@@ -395,14 +417,11 @@ vids.forEach(v=>{
     }
     clearStandby();
     if(px.list&&px.list.length>1)prepNext();
-    else{
-      playlist=false;bgVid.loop=true;
-      if(pendingSwap){pendingSwap=false;bgVid.currentTime=0;bgSync();}
-    }
+    else{playlist=false;bgVid.loop=true;}
   });
 });
 // once the active clip is playing, start loading the next one
-onBg('playing',()=>{if(playlist&&standbyIdx===-1&&!pendingSwap)prepNext();});
+onBg('playing',()=>{if(playlist&&standbyIdx===-1&&!retiring)prepNext();});
 onBg('ended',()=>{if(playlist)advance();});
 
 // If a file fails (missing HQ file, expired Pexels link...): skip that clip, or if the
@@ -420,7 +439,7 @@ onBg('error',()=>{
     px.list.splice(i,1);
     if(px.list.length){
       px.idx=i%px.list.length;savePx();clearStandby();
-      playlist=px.list.length>1;bgVid.loop=!playlist;
+      playlist=px.list.length>1;bgVid.loop=true;
       showCredit();
       setBgSrc(chooseFile(cur().files,wantHQ()));
       bgSync();return;
@@ -434,25 +453,19 @@ onBg('error',()=>{
 
 bgToggle.addEventListener('click',()=>{
   bgPanel.hidden=!bgPanel.hidden;
-  if(!bgPanel.hidden){
-    keyIn.value='';
-    keyIn.placeholder=px.key?'key saved \u2014 paste to replace':'pexels api key';
-    qIn.value=px.q||'';
-  }
+  if(!bgPanel.hidden)qIn.value=px.q||'';
 });
 $('pxgo').addEventListener('click',async()=>{
-  const k=keyIn.value.trim();
-  if(k)px.key=k;
-  if(!px.key){setStat('paste your pexels api key first');return;}
   px.q=qIn.value.trim()||'abstract';
-  px.list=null;px.idx=0;savePx();keyIn.value='';
+  px.list=null;px.idx=0;savePx();
+  setStat('');
   await applyBg();
   if(!statEl.textContent)bgPanel.hidden=true;   // stay open only if something went wrong
 });
 $('pxreset').addEventListener('click',()=>{
   px={};
   try{localStorage.removeItem(LS_KEY);}catch(e){}
-  keyIn.value='';qIn.value='';setStat('');creditEl.hidden=true;
+  qIn.value='';setStat('');creditEl.hidden=true;
   bgPanel.hidden=true;
   applyBg();
 });
