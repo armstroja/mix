@@ -101,17 +101,16 @@ const strips={},segs={},fnEls={};
 const bgVid=$('bg'),bgBtn=$('bgbtn'),bgFile=$('bgfile');
 
 // ── Background video ──────────────────────────────────────────────
-// Always plays (muted, looping) behind the UI; the audio comes from the stems.
-const isVideo=f=>f.type.startsWith('video/')||/\.(mp4|webm|mov|m4v|ogv)$/i.test(f.name);
-let bgUrl=null;
-function setBg(file){
-  if(bgUrl)URL.revokeObjectURL(bgUrl);
-  bgUrl=file?URL.createObjectURL(file):null;
-  if(bgUrl){bgVid.src=bgUrl;bgVid.play().catch(()=>{});}
-  else{bgVid.removeAttribute('src');bgVid.load();}
-}
-bgBtn.addEventListener('click',e=>{if(e.shiftKey)setBg(null);else bgFile.click();});
-bgFile.addEventListener('change',()=>{if(bgFile.files[0])setBg(bgFile.files[0]);bgFile.value='';});
+// Place the video in the project root, e.g. /background.mp4.
+const BG_VIDEO = '/background.mp4';
+
+bgVid.src = BG_VIDEO;
+bgVid.muted = true;
+bgVid.loop = true;
+bgVid.autoplay = true;
+bgVid.playsInline = true;
+
+bgVid.play().catch(() => {});
 
 // ── UI ────────────────────────────────────────────────────────────
 STEMS.forEach(id=>{
