@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MIXER AIR</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+:root{
+  --ink:rgba(255,255,255,.8);--faint:rgba(255,255,255,.55);--line:rgba(255,255,255,.5);
+  --seg-off:rgba(255,255,255,.14);--seg-on:rgba(255,255,255,.62);
+  --dot-on:rgba(255,255,255,.22);
+  --shadow:0 0 8px rgba(0,0,0,.35);
+}
+#bg{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;z-index:-1;background:#000;pointer-events:none;}
+html,body{height:100%;}
+body{
+  background:#000;color:var(--ink);
+  font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;
+  display:flex;align-items:center;justify-content:center;
+  -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;
+}
+#app{display:flex;flex-direction:column;align-items:center;gap:30px;padding:24px;transition:opacity .2s;}
+body.drag #app{opacity:.55;}
+#cols{display:flex;gap:16px;align-items:flex-end;}
+.strip{display:flex;flex-direction:column-reverse;align-items:center;gap:5px;width:52px;}
+.strip.empty .seg{opacity:.35;}
+.strip.muted .seg{opacity:.25;}
+.seg{
+  width:52px;height:15px;border:none;border-radius:6px;cursor:pointer;
+  background:var(--seg-off);box-shadow:0 0 10px rgba(0,0,0,.18);
+  transition:background .06s,transform .1s,opacity .2s;
+}
+.seg.on{background:var(--seg-on);}
+.seg:active{transform:scale(.9);}
+.name{
+  margin-top:6px;background:none;border:none;cursor:pointer;font:inherit;
+  font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink);text-shadow:var(--shadow);
+}
+.strip.empty .name{color:var(--faint);}
+.fn{
+  width:100%;height:10px;font-size:7px;letter-spacing:.06em;text-align:center;
+  color:var(--faint);text-shadow:var(--shadow);white-space:nowrap;overflow:hidden;text-transform:uppercase;
+  -webkit-mask-image:linear-gradient(to right,#000 calc(100% - 14px),transparent);
+          mask-image:linear-gradient(to right,#000 calc(100% - 14px),transparent);
+}
+#dot{
+  width:56px;height:56px;border-radius:50%;cursor:pointer;
+  background:transparent;border:1px solid var(--line);box-shadow:var(--shadow);transition:background .2s;
+}
+#dot.playing{background:var(--dot-on);}
+#transport{display:flex;align-items:center;gap:12px;width:min(340px,80vw);}
+#bar{flex:1;position:relative;height:23px;cursor:pointer;touch-action:none;}
+#bar::before{content:'';position:absolute;left:0;right:0;top:11px;height:1px;background:var(--line);}
+#fill{
+  position:absolute;left:0;right:0;top:11px;height:1px;background:rgba(255,255,255,.9);box-shadow:var(--shadow);
+  transform-origin:left;transform:scaleX(0);
+}
+#time{text-shadow:var(--shadow);font-size:9px;letter-spacing:.08em;color:var(--faint);min-width:64px;text-align:right;font-variant-numeric:tabular-nums;}
+#hint,#bgbtn{text-shadow:var(--shadow);font-size:8px;letter-spacing:.22em;text-transform:uppercase;color:var(--faint);height:10px;}
+#bgbtn{background:none;border:none;font-family:inherit;cursor:pointer;height:auto;}
+#bgbtn:hover{color:var(--ink);}
+button:focus-visible,#dot:focus-visible{outline:1px solid var(--seg-on);outline-offset:3px;}
+</style>
+</head>
+<body>
+
+<video id="bg" autoplay muted loop playsinline></video>
+
+<div id="app">
+  <div id="cols"></div>
+  <button id="dot" type="button" aria-label="Play / pause"></button>
+  <div id="transport">
+    <div id="bar"><div id="fill"></div></div>
+    <div id="time">–:–– / –:––</div>
+  </div>
+  <div id="hint">drop stems anywhere</div>
+  <button id="bgbtn" type="button" title="click: choose a video · shift-click: remove">background video</button>
+</div>
+<input type="file" id="file" accept="audio/*,video/*,.mp3,.m4a,.wav,.aif,.aiff,.flac,.ogg" multiple hidden>
+<input type="file" id="bgfile" accept="video/*,.mp4,.webm,.mov,.m4v,.ogv" hidden>
+
+<script>
+const STEMS=['vocals','drums','bass','other'];
+const STEPS=7;
+const KEYWORDS={
+  vocals:['vocal','vox','voice','sing','lead','melody','choir','lyric','harmony'],
+  drums: ['drum','beat','kick','snare','hat','perc','rhythm','cymbal','clap'],
+  bass:  ['bass','sub','808','groove'],
+  other: ['other','inst','guitar','piano','keys','synth','pad','string','horn','brass','fx','misc'],
+};
+
+let ctx=null;
+const st={};
+STEMS.forEach(id=>{st[id]={buf:null,gain:null,src:null,vol:STEPS,prev:STEPS,muted:false};});
+let playing=false,startT=0,offset=0,dur=0,raf=0;
+
+const $=id=>document.getElementById(id);
+const dot=$('dot'),fillEl=$('fill'),timeEl=$('time'),barEl=$('bar'),hintEl=$('hint'),fileEl=$('file');
+const strips={},segs={},fnEls={};
+const bgVid=$('bg'),bgBtn=$('bgbtn'),bgFile=$('bgfile');
+
+// ── Background video ──────────────────────────────────────────────
+// Always plays (muted, looping) behind the UI; the audio comes from the stems.
+const isVideo=f=>f.type.startsWith('video/')||/\.(mp4|webm|mov|m4v|ogv)$/i.test(f.name);
+let bgUrl=null;
+function setBg(file){
+  if(bgUrl)URL.revokeObjectURL(bgUrl);
+  bgUrl=file?URL.createObjectURL(file):null;
+  if(bgUrl){bgVid.src=bgUrl;bgVid.play().catch(()=>{});}
+  else{bgVid.removeAttribute('src');bgVid.load();}
+}
+bgBtn.addEventListener('click',e=>{if(e.shiftKey)setBg(null);else bgFile.click();});
+bgFile.addEventListener('change',()=>{if(bgFile.files[0])setBg(bgFile.files[0]);bgFile.value='';});
+
+// ── UI ────────────────────────────────────────────────────────────
+STEMS.forEach(id=>{
+  const strip=document.createElement('div');
+  strip.className='strip empty';
+  const fn=document.createElement('div');fn.className='fn';
+  const name=document.createElement('button');
+  name.className='name';name.type='button';name.textContent=id;
+  name.addEventListener('click',()=>pick(id));
+  strip.append(fn,name);
+  segs[id]=[];
+  for(let i=0;i<STEPS;i++){
+    const b=document.createElement('button');
+    b.className='seg on';b.type='button';b.setAttribute('aria-label',id+' level '+(i+1));
+    b.addEventListener('click',()=>setVol(id,i+1));
+    strip.appendChild(b);segs[id].push(b);
+  }
+  strips[id]=strip;fnEls[id]=fn;
+  $('cols').appendChild(strip);
+});
+
+function refresh(id){
+  const s=st[id];
+  segs[id].forEach((b,i)=>b.classList.toggle('on',i<s.vol));
+  strips[id].classList.toggle('muted',s.muted);
+}
+
+// ── Audio ─────────────────────────────────────────────────────────
+function ensureCtx(){
+  if(ctx)return;
+  ctx=new(window.AudioContext||window.webkitAudioContext)();
+  STEMS.forEach(id=>{
+    const g=ctx.createGain();g.connect(ctx.destination);
+    st[id].gain=g;applyGain(id);
+  });
+}
+function applyGain(id){
+  const s=st[id];if(!s.gain)return;
+  s.gain.gain.setTargetAtTime(s.muted?0:s.vol/STEPS,ctx.currentTime,0.02);
+}
+function setVol(id,v){
+  const s=st[id];
+  if(v>1)s.prev=v;
+  s.vol=v;s.muted=(v===1);
+  refresh(id);applyGain(id);
+}
+function toggleMute(id){
+  const s=st[id];if(!s.buf)return;
+  if(!s.muted){if(s.vol>1)s.prev=s.vol;s.muted=true;s.vol=1;}
+  else{s.muted=false;s.vol=s.prev||STEPS;}
+  refresh(id);applyGain(id);
+}
+function stopSrc(id){
+  const s=st[id];
+  try{s.src&&s.src.stop();}catch(e){}
+  s.src=null;
+}
+function spawn(id,off){
+  const s=st[id];if(!s.buf)return;
+  stopSrc(id);
+  const src=ctx.createBufferSource();
+  src.buffer=s.buf;src.connect(s.gain);
+  src.start(0,Math.max(0,off%s.buf.duration));
+  s.src=src;
+}
+function hasAny(){return STEMS.some(id=>st[id].buf);}
+function pos(){return playing?ctx.currentTime-startT:offset;}
+
+function play(){
+  if(!hasAny())return;
+  ensureCtx();if(ctx.state==='suspended')ctx.resume();
+  STEMS.forEach(id=>spawn(id,offset));
+  startT=ctx.currentTime-offset;
+  playing=true;dot.classList.add('playing');
+  cancelAnimationFrame(raf);tick();
+}
+function pause(){
+  if(!playing)return;
+  offset=ctx.currentTime-startT;
+  STEMS.forEach(stopSrc);
+  playing=false;dot.classList.remove('playing');
+  cancelAnimationFrame(raf);
+}
+function toggle(){
+  if(!hasAny()){pick(null);return;}
+  playing?pause():play();
+}
+function seek(t){
+  if(!dur)return;
+  t=Math.max(0,Math.min(dur-0.05,t));
+  const was=playing;
+  if(was)pause();
+  offset=t;render(t);
+  if(was)play();
+}
+
+// ── Progress ──────────────────────────────────────────────────────
+function fmt(s){const m=Math.floor(s/60),c=Math.floor(s%60);return m+':'+(c<10?'0':'')+c;}
+function render(p){
+  fillEl.style.transform='scaleX('+(dur?Math.min(1,p/dur):0)+')';
+  timeEl.textContent=dur?fmt(p)+' / '+fmt(dur):'–:–– / –:––';
+}
+function tick(){
+  if(!playing)return;
+  const p=pos();
+  if(p>=dur){ // reached the end: stop and rewind
+    STEMS.forEach(stopSrc);
+    playing=false;offset=0;dot.classList.remove('playing');
+    render(0);return;
+  }
+  render(p);
+  raf=requestAnimationFrame(tick);
+}
+
+// scrub: drag or click the line (mouse, touch and pen)
+let scrubbing=false,wasPlaying=false;
+const pct=e=>{const r=barEl.getBoundingClientRect();return Math.max(0,Math.min(1,(e.clientX-r.left)/r.width));};
+barEl.addEventListener('pointerdown',e=>{
+  if(!dur)return;
+  barEl.setPointerCapture(e.pointerId);
+  scrubbing=true;wasPlaying=playing;
+  if(playing)pause();
+  render(pct(e)*dur);
+});
+barEl.addEventListener('pointermove',e=>{if(scrubbing)render(pct(e)*dur);});
+barEl.addEventListener('pointerup',e=>{
+  if(!scrubbing)return;
+  scrubbing=false;
+  offset=pct(e)*dur;render(offset);
+  if(wasPlaying)play();
+});
+barEl.addEventListener('pointercancel',()=>{scrubbing=false;if(wasPlaying)play();});
+
+// ── Loading ───────────────────────────────────────────────────────
+function detect(name){
+  const n=name.toLowerCase();
+  for(const id of STEMS)if(KEYWORDS[id].some(k=>n.includes(k)))return id;
+  return null;
+}
+// Match files to stems by name; anything left over fills empty slots.
+// A single file picked from a stem's own label goes to that stem.
+function assign(files,target){
+  const vids=files.filter(isVideo);
+  if(vids.length)setBg(vids[0]);            // a dropped/picked video becomes the background
+  files=files.filter(f=>!isVideo(f));
+  if(!files.length)return;
+  if(target&&files.length===1){load(target,files[0]);return;}
+  const taken=new Set(),rest=[];
+  files.forEach(f=>{
+    const id=detect(f.name);
+    if(id&&!taken.has(id)){taken.add(id);load(id,f);}else rest.push(f);
+  });
+  const empty=STEMS.filter(id=>!st[id].buf&&!taken.has(id));
+  rest.forEach((f,i)=>{if(empty[i])load(empty[i],f);});
+}
+async function load(id,file){
+  ensureCtx();
+  try{
+    const buf=await ctx.decodeAudioData(await file.arrayBuffer());
+    st[id].buf=buf;
+    dur=Math.max(dur,buf.duration);
+    strips[id].classList.remove('empty');
+    fnEls[id].textContent=file.name.replace(/\.[^.]+$/,'');
+    hintEl.textContent='';
+    if(playing)spawn(id,pos());
+    if(!playing)render(offset);
+  }catch(e){
+    console.error(e);
+    hintEl.textContent='couldn\u2019t decode '+id;
+    setTimeout(()=>{hintEl.textContent=hasAny()?'':'drop stems anywhere';},2000);
+  }
+}
+let pickTarget=null;
+function pick(id){pickTarget=id;fileEl.click();}
+fileEl.addEventListener('change',()=>{
+  assign([...fileEl.files],pickTarget);
+  fileEl.value='';
+});
+
+// drop anywhere on the page
+window.addEventListener('dragover',e=>{e.preventDefault();document.body.classList.add('drag');});
+window.addEventListener('dragleave',e=>{if(!e.relatedTarget)document.body.classList.remove('drag');});
+window.addEventListener('drop',e=>{
+  e.preventDefault();document.body.classList.remove('drag');
+  assign([...e.dataTransfer.files],null);
+});
+
+// ── Input ─────────────────────────────────────────────────────────
+dot.addEventListener('click',toggle);
+window.addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT')return;
+  if(e.code==='Space'){e.preventDefault();toggle();return;}
+  if(e.key==='ArrowLeft'){e.preventDefault();seek(pos()-5);return;}
+  if(e.key==='ArrowRight'){e.preventDefault();seek(pos()+5);return;}
+  const i=['1','2','3','4'].indexOf(e.key);
+  if(i>-1)toggleMute(STEMS[i]);
+});
+// resume after a tab switch / route change if the browser suspended audio
+document.addEventListener('visibilitychange',()=>{
+  if(!document.hidden&&playing&&ctx&&ctx.state!=='running')ctx.resume();
+});
+</script>
+</body>
+</html>
