@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#000000">
 <title>MIXER AIR</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;}
@@ -18,11 +19,14 @@
 @property --seg-ghost{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.26);}
 @property --seg-off{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.14);}
 #cols{transition:--seg-on 2s linear,--seg-off 2s linear,--seg-ghost 2s linear;}
-#bg,#bg2{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;z-index:-1;background:#000;pointer-events:none;opacity:0;transition:opacity .8s;}
+#bg,#bg2{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;z-index:-1;background:var(--chrome,#000);pointer-events:none;opacity:0;transition:opacity .8s;}
 #bg.show,#bg2.show{opacity:1;}
-html,body{height:100%;}
+html,body{height:100%;transition:background-color 2s linear;}
+/* --chrome is the mixer's tint colour (set from JS). Safari 26+ tints its top bar from the
+   page/edge background, older Safari uses the theme-color meta tag; both are kept in sync. */
+html{background:var(--chrome,#000);}
 body{
-  background:#000;color:var(--ink);
+  background:var(--chrome,#000);color:var(--ink);
   font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;
   display:flex;align-items:center;justify-content:center;
   -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;
@@ -147,7 +151,10 @@ const TICK_MS       = 250;    // progress updates per second = 1000/TICK_MS
 const IDLE_SUSPEND  = 20000;  // ms of pause before the audio hardware is released
 const TINT          = true;   // tint the stem meters with the video's dominant colour
 const METER_MS      = 66;     // level-meter refresh in ms (~15 fps); raise it to save battery
-const MAX_CLIP_MB     = 12;     // skip Pexels files heavier than this (faster starts); 0 = no cap
+const MAX_CLIP_MB     = 12;     // skip Pexels files heavier than this; only works if Pexels reports a file size (often it doesn't); 0 = no cap
+const PX_WIDTH_HQ     = 1280;   // desktop: smallest Pexels file at least this wide (720p). 1920 = ~2-3x the download
+const PX_WIDTH_SD     = 960;    // phones / data-saver
+const CHROME_L        = 56;     // Safari's top bar takes the mixer colour at this lightness (%). The meters' "on" colour reads as ~56% on dark video; lower = darker, subtler bar
 
 // ── Pexels proxy ──────────────────────────────────────────────────
 // Search requests go to your Cloudflare Worker, which adds the API key server-side.
@@ -206,9 +213,10 @@ function applyCors(el,src){
   if(TINT&&remote)el.crossOrigin='anonymous';else el.removeAttribute('crossorigin');
   el._tintOK=TINT;
 }
-function setBgSrc(src){
+function setBgSrc(src,poster){
   applyCors(bgVid,src);
   tintOK=TINT;
+  bgVid.poster=safeUrl(poster)==='#'?'':poster;   // still frame shown while the clip downloads
   bgVid.src=src;
 }
 function dominant(d){
@@ -229,9 +237,14 @@ function dominant(d){
   if(best.w<n*0.03)return null;                     // effectively greyscale
   return [best.r/best.w,best.g/best.w,best.b/best.w];
 }
+const themeMeta=document.querySelector('meta[name="theme-color"]');
+function setChrome(c){
+  document.documentElement.style.setProperty('--chrome',c);   // Safari 26+: page/edge background
+  if(themeMeta)themeMeta.setAttribute('content',c);            // older Safari + Chrome: theme-color
+}
 function applyTint(rgb){
   const el=$('cols');
-  if(!rgb){el.style.removeProperty('--seg-on');el.style.removeProperty('--seg-off');el.style.removeProperty('--seg-ghost');return;}
+  if(!rgb){el.style.removeProperty('--seg-on');el.style.removeProperty('--seg-off');el.style.removeProperty('--seg-ghost');setChrome('#000');return;}
   const [r,g,b]=rgb,mx=Math.max(r,g,b),mn=Math.min(r,g,b),c=mx-mn;
   let h;
   if(mx===r)h=((g-b)/c+6)%6;else if(mx===g)h=(b-r)/c+2;else h=(r-g)/c+4;
@@ -241,6 +254,7 @@ function applyTint(rgb){
   el.style.setProperty('--seg-on','hsla('+h+','+sat+'%,70%,.8)');
   el.style.setProperty('--seg-off','hsla('+h+','+sat+'%,70%,.16)');
   el.style.setProperty('--seg-ghost','hsla('+h+','+sat+'%,70%,.3)');
+  setChrome('hsl('+h+','+sat+'%,'+CHROME_L+'%)');
 }
 function sampleTint(){
   if(!tintOK||bgVid.readyState<2||bgVid.paused||document.hidden)return;
@@ -297,7 +311,7 @@ async function pexelsFetch(){
   if(r.status===429)throw new Error('rate limited, try again later');
   if(!r.ok)throw new Error('pexels error '+r.status);
   const found=((await r.json()).videos||[]).map(v=>({
-    id:v.id,page:v.url,name:v.user&&v.user.name,by:v.user&&v.user.url,
+    id:v.id,page:v.url,name:v.user&&v.user.name,by:v.user&&v.user.url,img:v.image,
     files:(v.video_files||[])
       .filter(f=>f.file_type==='video/mp4'&&f.width)
       .map(f=>({w:f.width,l:f.link,s:f.size||0}))
@@ -310,7 +324,7 @@ async function pexelsFetch(){
 }
 // smallest mp4 that's at least the target width, else the biggest available
 function chooseFile(files,hq){
-  const target=hq?1920:960;
+  const target=hq?PX_WIDTH_HQ:PX_WIDTH_SD;
   let i=files.findIndex(f=>f.w>=target);
   if(i<0)i=files.length-1;
   // heavy files start slowly: step down to a smaller one when the size is known
@@ -340,7 +354,7 @@ async function applyBg(){
   clearStandby();
   bgVid.classList.add('show');other().classList.remove('show');
   bgVid.loop=true;                  // always loops; a playlist hands over once the next clip is ready
-  setBgSrc(src);
+  setBgSrc(src,px.q&&cur()?cur().img:'');
   bgSync();
 }
 
@@ -396,7 +410,7 @@ function advance(){
 }
 // standby element events
 vids.forEach(v=>{
-  v.addEventListener('canplay',()=>{
+  v.addEventListener('canplaythrough',()=>{      // stricter than 'canplay': buffered enough to play to the end without stalling
     if(v===bgVid||standbyIdx<0||!v.getAttribute('src'))return;
     standbyReady=true;
     clearTimeout(swapT);
@@ -441,7 +455,7 @@ onBg('error',()=>{
       px.idx=i%px.list.length;savePx();clearStandby();
       playlist=px.list.length>1;bgVid.loop=true;
       showCredit();
-      setBgSrc(chooseFile(cur().files,wantHQ()));
+      setBgSrc(chooseFile(cur().files,wantHQ()),cur().img);
       bgSync();return;
     }
     px.list=null;savePx();creditEl.hidden=true;
@@ -734,12 +748,22 @@ window.addEventListener('drop',e=>{
 });
 
 // ── Input ─────────────────────────────────────────────────────────
+function toggleFullscreen(){
+  const d=document,el=d.documentElement;
+  const isOn=d.fullscreenElement||d.webkitFullscreenElement;
+  const fn=isOn?(d.exitFullscreen||d.webkitExitFullscreen):(el.requestFullscreen||el.webkitRequestFullscreen);
+  if(!fn)return;                                   // e.g. iPhone Safari has no element fullscreen
+  try{const p=fn.call(isOn?d:el);if(p&&p.catch)p.catch(()=>{});}catch(e){}
+}
 dot.addEventListener('click',toggle);
 window.addEventListener('keydown',e=>{
   if(e.target.tagName==='INPUT')return;
   if(e.code==='Space'){e.preventDefault();toggle();return;}
   if(e.key==='ArrowLeft'){e.preventDefault();seek(pos()-5);return;}
   if(e.key==='ArrowRight'){e.preventDefault();seek(pos()+5);return;}
+  if((e.key==='f'||e.key==='F')&&!e.metaKey&&!e.ctrlKey&&!e.altKey){   // leave Cmd/Ctrl+F (find) alone
+    e.preventDefault();if(!e.repeat)toggleFullscreen();return;
+  }
   const i=['1','2','3','4'].indexOf(e.key);
   if(i>-1)toggleMute(STEMS[i]);
 });
