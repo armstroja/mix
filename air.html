@@ -62,6 +62,31 @@ body.drag #app{opacity:.55;}
 #fill.jump{transition:none;}
 #time{text-shadow:var(--shadow);font-size:9px;letter-spacing:.08em;color:var(--faint);min-width:64px;text-align:right;font-variant-numeric:tabular-nums;}
 #hint{text-shadow:var(--shadow);font-size:8px;letter-spacing:.22em;text-transform:uppercase;color:var(--faint);height:10px;}
+#bgwrap{display:flex;flex-direction:column;align-items:center;gap:12px;}
+#bgbtn,.pbtn,#bgpanel a{
+  background:none;border:none;font-family:inherit;cursor:pointer;text-decoration:none;
+  font-size:8px;letter-spacing:.22em;text-transform:uppercase;color:var(--faint);text-shadow:var(--shadow);
+}
+#bgbtn:hover,.pbtn:hover,#bgpanel a:hover{color:var(--ink);}
+#bgpanel{display:flex;flex-direction:column;align-items:center;gap:8px;}
+#bgpanel[hidden]{display:none;}
+#bgpanel input{
+  width:min(240px,70vw);background:rgba(0,0,0,.28);border:1px solid var(--line);border-radius:6px;
+  padding:7px 10px;font-family:inherit;font-size:11px;color:var(--ink);text-align:center;outline:none;
+  -webkit-user-select:text;user-select:text;
+}
+#bgpanel input::placeholder{color:var(--faint);}
+#bgpanel input:focus{border-color:var(--ink);}
+@media (pointer:coarse){#bgpanel input{font-size:16px;}} /* stops iOS zooming on focus */
+.prow{display:flex;gap:18px;align-items:center;}
+#bgstat{font-size:8px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);text-shadow:var(--shadow);min-height:10px;}
+#credit{
+  position:fixed;left:0;right:0;bottom:max(10px,env(safe-area-inset-bottom));text-align:center;
+  font-size:8px;letter-spacing:.18em;text-transform:uppercase;color:var(--faint);text-shadow:var(--shadow);pointer-events:none;
+}
+#credit[hidden]{display:none;}
+#credit a{color:inherit;text-decoration:none;border-bottom:1px solid var(--line);pointer-events:auto;}
+#credit a:hover{color:var(--ink);}
 button:focus-visible,#dot:focus-visible{outline:1px solid var(--seg-on);outline-offset:3px;}
 @media (prefers-reduced-motion:reduce){#fill{transition:none;}}
 </style>
@@ -80,7 +105,21 @@ button:focus-visible,#dot:focus-visible{outline:1px solid var(--seg-on);outline-
     <div id="time">–:–– / –:––</div>
   </div>
   <div id="hint">drop stems anywhere</div>
+  <div id="bgwrap">
+    <button id="bgbtn" type="button">background</button>
+    <div id="bgpanel" hidden>
+      <input id="pxkey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="pexels api key">
+      <input id="pxq" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="search: abstract, rain, neon…">
+      <div class="prow">
+        <button id="pxgo" class="pbtn" type="button">go</button>
+        <button id="pxreset" class="pbtn" type="button">reset</button>
+        <a href="https://www.pexels.com/api/" target="_blank" rel="noopener">get a key</a>
+      </div>
+      <div id="bgstat"></div>
+    </div>
+  </div>
 </div>
+<div id="credit" hidden>video by <a id="creditName" href="#" target="_blank" rel="noopener"></a> on <a id="creditPx" href="#" target="_blank" rel="noopener">pexels</a></div>
 <input type="file" id="file" accept="audio/*,.mp3,.m4a,.wav,.aif,.aiff,.flac,.ogg" multiple hidden>
 
 <script>
@@ -94,7 +133,8 @@ const KEYWORDS={
 };
 
 // ── Power settings ────────────────────────────────────────────────
-const BG_SRC        = 'background.mp4';
+const BG_SD         = 'background.mp4';      // phones / tablets / data-saver
+const BG_HQ         = 'background-hq.mp4';   // laptops and desktops (falls back to SD if missing)
 const BG_WHILE_IDLE = true;   // false: video only rolls while audio is playing
 const TICK_MS       = 250;    // progress updates per second = 1000/TICK_MS
 const IDLE_SUSPEND  = 20000;  // ms of pause before the audio hardware is released
@@ -115,7 +155,8 @@ const bgVid=$('bg');
 let bgLoaded=false;
 function bgPlay(){
   if(document.hidden)return;
-  if(!bgLoaded){bgVid.src=BG_SRC;bgLoaded=true;}
+  if(!bgLoaded){applyBg();return;}   // first call: pick + load a source
+  if(!bgVid.getAttribute('src'))return; // still resolving
   bgVid.play().catch(()=>{
     // autoplay blocked (iOS Low Power Mode does this): retry on first touch
     const kick=()=>{bgSync();};
@@ -125,7 +166,119 @@ function bgPlay(){
 }
 function bgPause(){if(bgLoaded)bgVid.pause();}
 function bgSync(){ (playing||BG_WHILE_IDLE) ? bgPlay() : bgPause(); }
-bgVid.addEventListener('error',()=>console.warn('background.mp4 not found next to this file'));
+// ── Source selection ──────────────────────────────────────────────
+// Capability check rather than user-agent sniffing: a mouse-and-hover device with a
+// wide window is a laptop/desktop; the network hints respect data-saver settings.
+function wantHQ(){
+  const c=navigator.connection;
+  if(c&&(c.saveData||c.effectiveType==='2g'||c.effectiveType==='slow-2g'||c.effectiveType==='3g'))return false;
+  if(matchMedia('(prefers-reduced-data: reduce)').matches)return false;
+  return matchMedia('(hover:hover) and (pointer:fine)').matches && innerWidth>=1000;
+}
+
+// ── Pexels: bring your own API key ────────────────────────────────
+// The key, search term and the chosen video's file list all live in localStorage on
+// this device. The key is only ever sent to api.pexels.com. After the first pick there
+// are no more API calls: reloads reuse the cached video until you hit "go" or "reset".
+const LS_KEY='mixerair:pexels';
+let px={};
+try{px=JSON.parse(localStorage.getItem(LS_KEY)||'null')||{};}catch(e){}
+const savePx=()=>{try{localStorage.setItem(LS_KEY,JSON.stringify(px));}catch(e){}};
+const bgPanel=$('bgpanel'),bgToggle=$('bgbtn'),keyIn=$('pxkey'),qIn=$('pxq'),statEl=$('bgstat'),creditEl=$('credit');
+const setStat=t=>{statEl.textContent=t;};
+const safeUrl=u=>(typeof u==='string'&&u.startsWith('https://'))?u:'#';
+
+function showCredit(){
+  const p=px.pick;
+  if(!p){creditEl.hidden=true;return;}
+  const n=$('creditName');
+  n.textContent=p.name||'unknown';n.href=safeUrl(p.by);
+  $('creditPx').href=safeUrl(p.page);
+  creditEl.hidden=false;
+}
+
+async function pexelsPick(){
+  const qs=new URLSearchParams({
+    query:px.q||'abstract',orientation:'landscape',size:'medium',
+    min_duration:'5',max_duration:'30',per_page:'30'
+  });
+  const r=await fetch('https://api.pexels.com/videos/search?'+qs,{headers:{Authorization:px.key}});
+  if(r.status===401||r.status===403){px.key='';px.pick=null;savePx();throw new Error('key rejected');}
+  if(!r.ok)throw new Error('pexels error '+r.status);
+  const list=(await r.json()).videos||[];
+  if(!list.length)throw new Error('no results for \u201c'+(px.q||'abstract')+'\u201d');
+  const v=list[Math.floor(Math.random()*list.length)];
+  const files=(v.video_files||[])
+    .filter(f=>f.file_type==='video/mp4'&&f.width)
+    .map(f=>({w:f.width,l:f.link}))
+    .sort((a,b)=>a.w-b.w);
+  if(!files.length)throw new Error('no playable files');
+  px.pick={id:v.id,page:v.url,name:v.user&&v.user.name,by:v.user&&v.user.url,files};
+  savePx();
+}
+// smallest mp4 that's at least the target width, else the biggest available
+function chooseFile(files,hq){
+  const target=hq?1920:960;
+  return (files.find(f=>f.w>=target)||files[files.length-1]).l;
+}
+
+async function resolveBg(){
+  const hq=wantHQ();
+  if(px.key){
+    try{
+      if(!px.pick){setStat('fetching\u2026');await pexelsPick();}
+      setStat('');showCredit();
+      return chooseFile(px.pick.files,hq);
+    }catch(e){
+      console.warn('Pexels:',e);
+      setStat(String(e.message||e));
+    }
+  }
+  creditEl.hidden=true;
+  return hq?BG_HQ:BG_SD;
+}
+async function applyBg(){
+  bgLoaded=true;
+  const src=await resolveBg();
+  bgVid.src=src;
+  bgSync();
+}
+
+// If the chosen file fails (missing HQ file, expired Pexels link...), drop to the SD file.
+bgVid.addEventListener('error',()=>{
+  const src=bgVid.getAttribute('src');
+  if(src===BG_SD){console.warn(BG_SD+' not found next to this file');return;}
+  if(px.pick&&px.pick.files.some(f=>f.l===src)){
+    px.pick=null;savePx();creditEl.hidden=true;   // stale link: re-pick next load
+    setStat('pexels link failed, using local file');
+  }
+  bgVid.src=BG_SD;bgSync();
+});
+
+bgToggle.addEventListener('click',()=>{
+  bgPanel.hidden=!bgPanel.hidden;
+  if(!bgPanel.hidden){
+    keyIn.value='';
+    keyIn.placeholder=px.key?'key saved \u2014 paste to replace':'pexels api key';
+    qIn.value=px.q||'';
+  }
+});
+$('pxgo').addEventListener('click',async()=>{
+  const k=keyIn.value.trim();
+  if(k)px.key=k;
+  if(!px.key){setStat('paste your pexels api key first');return;}
+  px.q=qIn.value.trim()||'abstract';
+  px.pick=null;savePx();keyIn.value='';
+  await applyBg();
+  if(!statEl.textContent)bgPanel.hidden=true;   // stay open only if something went wrong
+});
+$('pxreset').addEventListener('click',()=>{
+  px={};
+  try{localStorage.removeItem(LS_KEY);}catch(e){}
+  keyIn.value='';qIn.value='';setStat('');creditEl.hidden=true;
+  bgPanel.hidden=true;
+  applyBg();
+});
 
 // ── UI ────────────────────────────────────────────────────────────
 STEMS.forEach(id=>{
