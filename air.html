@@ -57,15 +57,14 @@ body.drag #app{opacity:.55;}
   transform-origin:left;transform:scaleX(0);
 }
 #time{text-shadow:var(--shadow);font-size:9px;letter-spacing:.08em;color:var(--faint);min-width:64px;text-align:right;font-variant-numeric:tabular-nums;}
-#hint,#bgbtn{text-shadow:var(--shadow);font-size:8px;letter-spacing:.22em;text-transform:uppercase;color:var(--faint);height:10px;}
-#bgbtn{background:none;border:none;font-family:inherit;cursor:pointer;height:auto;}
-#bgbtn:hover{color:var(--ink);}
+#hint{text-shadow:var(--shadow);font-size:8px;letter-spacing:.22em;text-transform:uppercase;color:var(--faint);height:10px;}
 button:focus-visible,#dot:focus-visible{outline:1px solid var(--seg-on);outline-offset:3px;}
 </style>
 </head>
 <body>
 
-<video id="bg" autoplay muted loop playsinline></video>
+<!-- Background video: background.mp4 sits in the same folder as this HTML file -->
+<video id="bg" src="background.mp4" autoplay muted loop playsinline></video>
 
 <div id="app">
   <div id="cols"></div>
@@ -75,10 +74,8 @@ button:focus-visible,#dot:focus-visible{outline:1px solid var(--seg-on);outline-
     <div id="time">–:–– / –:––</div>
   </div>
   <div id="hint">drop stems anywhere</div>
-  <button id="bgbtn" type="button" title="click: choose a video · shift-click: remove">background video</button>
 </div>
-<input type="file" id="file" accept="audio/*,video/*,.mp3,.m4a,.wav,.aif,.aiff,.flac,.ogg" multiple hidden>
-<input type="file" id="bgfile" accept="video/*,.mp4,.webm,.mov,.m4v,.ogv" hidden>
+<input type="file" id="file" accept="audio/*,.mp3,.m4a,.wav,.aif,.aiff,.flac,.ogg" multiple hidden>
 
 <script>
 const STEMS=['vocals','drums','bass','other'];
@@ -98,19 +95,17 @@ let playing=false,startT=0,offset=0,dur=0,raf=0;
 const $=id=>document.getElementById(id);
 const dot=$('dot'),fillEl=$('fill'),timeEl=$('time'),barEl=$('bar'),hintEl=$('hint'),fileEl=$('file');
 const strips={},segs={},fnEls={};
-const bgVid=$('bg'),bgBtn=$('bgbtn'),bgFile=$('bgfile');
+const bgVid=$('bg');
 
 // ── Background video ──────────────────────────────────────────────
-// Place the video in the project root, e.g. /background.mp4.
-const BG_VIDEO = '/background.mp4';
-
-bgVid.src = BG_VIDEO;
-bgVid.muted = true;
-bgVid.loop = true;
-bgVid.autoplay = true;
-bgVid.playsInline = true;
-
-bgVid.play().catch(() => {});
+// Loaded from background.mp4 next to this file (relative path, no leading slash).
+bgVid.muted=true;               // required for autoplay in most browsers
+bgVid.play().catch(()=>{        // if autoplay is blocked, start on first interaction
+  const kick=()=>{bgVid.play().catch(()=>{});};
+  window.addEventListener('pointerdown',kick,{once:true});
+  window.addEventListener('keydown',kick,{once:true});
+});
+bgVid.addEventListener('error',()=>console.warn('background.mp4 not found next to this HTML file'));
 
 // ── UI ────────────────────────────────────────────────────────────
 STEMS.forEach(id=>{
@@ -253,9 +248,6 @@ function detect(name){
 // Match files to stems by name; anything left over fills empty slots.
 // A single file picked from a stem's own label goes to that stem.
 function assign(files,target){
-  const vids=files.filter(isVideo);
-  if(vids.length)setBg(vids[0]);            // a dropped/picked video becomes the background
-  files=files.filter(f=>!isVideo(f));
   if(!files.length)return;
   if(target&&files.length===1){load(target,files[0]);return;}
   const taken=new Set(),rest=[];
