@@ -12,9 +12,9 @@
   --dot-on:rgba(255,255,255,.22);
   --shadow:0 0 8px rgba(0,0,0,.35);
 }
-/* object-fit:none = play at the file's own pixel size, centred, and let the
-   viewport crop whatever hangs off the edges. No scaling either way. */
-#bg{position:fixed;inset:0;width:100%;height:100%;object-fit:none;object-position:center;z-index:-1;background:#000;pointer-events:none;}
+/* object-fit:cover = scale (keeping aspect ratio) until the video fills the
+   whole viewport, then crop whatever overflows. Never distorts. */
+#bg{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;z-index:-1;background:#000;pointer-events:none;}
 html,body{height:100%;}
 body{
   background:#000;color:var(--ink);
@@ -95,7 +95,7 @@ const KEYWORDS={
 
 // ── Power settings ────────────────────────────────────────────────
 const BG_SRC        = 'background.mp4';
-const BG_WHILE_IDLE = false;  // false: video only rolls while audio is playing
+const BG_WHILE_IDLE = true;   // false: video only rolls while audio is playing
 const TICK_MS       = 250;    // progress updates per second = 1000/TICK_MS
 const IDLE_SUSPEND  = 20000;  // ms of pause before the audio hardware is released
 
@@ -116,7 +116,12 @@ let bgLoaded=false;
 function bgPlay(){
   if(document.hidden)return;
   if(!bgLoaded){bgVid.src=BG_SRC;bgLoaded=true;}
-  bgVid.play().catch(()=>{});
+  bgVid.play().catch(()=>{
+    // autoplay blocked (iOS Low Power Mode does this): retry on first touch
+    const kick=()=>{bgSync();};
+    window.addEventListener('pointerdown',kick,{once:true});
+    window.addEventListener('keydown',kick,{once:true});
+  });
 }
 function bgPause(){if(bgLoaded)bgVid.pause();}
 function bgSync(){ (playing||BG_WHILE_IDLE) ? bgPlay() : bgPause(); }
