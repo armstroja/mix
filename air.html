@@ -19,19 +19,23 @@
 @property --seg-ghost{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.26);}
 @property --seg-off{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.14);}
 #cols{transition:--seg-on 2s linear,--seg-off 2s linear,--seg-ghost 2s linear;}
-#bg,#bg2{position:fixed;inset:0;width:100%;height:100vh;height:100dvh;object-fit:cover;object-position:center;z-index:-1;background:var(--chrome,#000);pointer-events:none;opacity:0;transition:opacity .8s;}
+/* Layering is explicit: videos at z-index 0, UI (#app) at 1, credit at 2.
+   The body paints NO background, so nothing solid can sit on top of the videos. */
+#bg,#bg2{position:fixed;inset:0;width:100%;height:100vh;height:100dvh;object-fit:cover;object-position:center;z-index:0;background:var(--chrome,#000);pointer-events:none;opacity:0;transition:opacity .8s;}
 #bg.show,#bg2.show{opacity:1;}
-html,body{height:100%;height:100dvh;overflow:hidden;overscroll-behavior:none;transition:background-color 2s linear;}
+html,body{height:100%;height:100dvh;overflow:hidden;overscroll-behavior:none;}
 /* --chrome is the mixer's tint colour (set from JS). Safari 26+ tints its top bar from the
-   page/edge background, older Safari uses the theme-color meta tag; both are kept in sync. */
-html{background:var(--chrome,#000);}
+   page/edge background, older Safari uses the theme-color meta tag; both are kept in sync.
+   Only <html> carries the colour: if <body> also painted it, that background would render
+   on top of the videos instead of behind them. */
+html{background:var(--chrome,#000);transition:background-color 2s linear;}
 body{
-  background:var(--chrome,#000);color:var(--ink);
+  background:transparent;color:var(--ink);
   font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;
   display:flex;align-items:center;justify-content:center;
   -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;
 }
-#app{display:flex;flex-direction:column;align-items:center;gap:30px;padding:24px;transition:opacity .2s;}
+#app{position:relative;z-index:1;display:flex;flex-direction:column;align-items:center;gap:30px;padding:24px;transition:opacity .2s;}
 body.drag #app{opacity:.55;}
 #cols{display:flex;gap:16px;align-items:flex-end;}
 .strip{display:flex;flex-direction:column-reverse;align-items:center;gap:5px;width:52px;}
@@ -99,7 +103,7 @@ body.drag #app{opacity:.55;}
 .prow{display:flex;gap:18px;align-items:center;}
 #bgstat{font-size:8px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);text-shadow:var(--shadow);min-height:10px;}
 #credit{
-  position:fixed;left:0;right:0;bottom:max(10px,env(safe-area-inset-bottom));text-align:center;
+  position:fixed;z-index:2;left:0;right:0;bottom:max(10px,env(safe-area-inset-bottom));text-align:center;
   font-size:8px;letter-spacing:.18em;text-transform:uppercase;color:var(--faint);text-shadow:var(--shadow);pointer-events:none;
 }
 #credit[hidden]{display:none;}
