@@ -19,9 +19,9 @@
 @property --seg-ghost{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.26);}
 @property --seg-off{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.14);}
 #cols{transition:--seg-on 2s linear,--seg-off 2s linear,--seg-ghost 2s linear;}
-#bg,#bg2{position:fixed;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;z-index:-1;background:var(--chrome,#000);pointer-events:none;opacity:0;transition:opacity .8s;}
+#bg,#bg2{position:fixed;inset:0;width:100%;height:100vh;height:100dvh;object-fit:cover;object-position:center;z-index:-1;background:var(--chrome,#000);pointer-events:none;opacity:0;transition:opacity .8s;}
 #bg.show,#bg2.show{opacity:1;}
-html,body{height:100%;transition:background-color 2s linear;}
+html,body{height:100%;height:100dvh;overflow:hidden;overscroll-behavior:none;transition:background-color 2s linear;}
 /* --chrome is the mixer's tint colour (set from JS). Safari 26+ tints its top bar from the
    page/edge background, older Safari uses the theme-color meta tag; both are kept in sync. */
 html{background:var(--chrome,#000);}
@@ -63,7 +63,12 @@ body.drag #app{opacity:.55;}
   background:transparent;border:1px solid var(--line);box-shadow:var(--shadow);transition:background .2s;
 }
 #dot.playing{background:var(--dot-on);}
-#transport{display:flex;align-items:center;gap:12px;width:min(340px,80vw);}
+#transport{display:flex;align-items:center;gap:10px;width:min(340px,80vw);}
+.seekbtn{
+  background:none;border:none;font-family:inherit;cursor:pointer;flex-shrink:0;
+  font-size:9px;letter-spacing:.05em;color:var(--faint);text-shadow:var(--shadow);padding:8px 2px;
+}
+.seekbtn:active{color:var(--ink);}
 #bar{flex:1;position:relative;height:23px;cursor:pointer;touch-action:none;}
 #bar::before{content:'';position:absolute;left:0;right:0;top:11px;height:1px;background:var(--line);}
 #fill{
@@ -75,6 +80,7 @@ body.drag #app{opacity:.55;}
 #time{text-shadow:var(--shadow);font-size:9px;letter-spacing:.08em;color:var(--faint);min-width:64px;text-align:right;font-variant-numeric:tabular-nums;}
 #hint{text-shadow:var(--shadow);font-size:8px;letter-spacing:.22em;text-transform:uppercase;color:var(--faint);height:10px;}
 #bgwrap{display:flex;flex-direction:column;align-items:center;gap:12px;}
+#bottomrow{display:flex;align-items:center;gap:20px;}
 #bgbtn,.pbtn{
   background:none;border:none;font-family:inherit;cursor:pointer;text-decoration:none;
   font-size:8px;letter-spacing:.22em;text-transform:uppercase;color:var(--faint);text-shadow:var(--shadow);
@@ -114,12 +120,17 @@ button:focus-visible,#dot:focus-visible{outline:1px solid var(--seg-on);outline-
   <div id="cols"></div>
   <button id="dot" type="button" aria-label="Play / pause"></button>
   <div id="transport">
+    <button id="seekback" class="seekbtn" type="button" aria-label="seek back 5 seconds">−5</button>
     <div id="bar"><div id="fill"></div></div>
+    <button id="seekfwd" class="seekbtn" type="button" aria-label="seek forward 5 seconds">+5</button>
     <div id="time">–:–– / –:––</div>
   </div>
   <div id="hint">drop stems anywhere</div>
   <div id="bgwrap">
-    <button id="bgbtn" type="button">background</button>
+    <div id="bottomrow">
+      <button id="bgbtn" type="button">background</button>
+      <button id="fsbtn" class="pbtn" type="button">fullscreen</button>
+    </div>
     <div id="bgpanel" hidden>
       <input id="pxq" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="search: abstract, rain, neon…">
       <div class="prow">
@@ -172,6 +183,7 @@ let playing=false,startT=0,offset=0,dur=0,timer=0,idleT=0,meterT=0;
 
 const $=id=>document.getElementById(id);
 const dot=$('dot'),fillEl=$('fill'),timeEl=$('time'),barEl=$('bar'),hintEl=$('hint'),fileEl=$('file');
+const seekBackBtn=$('seekback'),seekFwdBtn=$('seekfwd'),fsBtn=$('fsbtn');
 const strips={},segs={},fnEls={};
 const vids=[$('bg'),$('bg2')];       // double-buffered: one plays, the other preloads the next clip
 let bgVid=vids[0];                   // the active one
@@ -696,6 +708,11 @@ barEl.addEventListener('pointerup',e=>{
 });
 barEl.addEventListener('pointercancel',()=>{scrubbing=false;if(wasPlaying)play();});
 
+// mobile transport buttons — same seek the arrow keys do
+seekBackBtn.addEventListener('click',()=>seek(pos()-5));
+seekFwdBtn.addEventListener('click',()=>seek(pos()+5));
+fsBtn.addEventListener('click',toggleFullscreen);
+
 // ── Loading ───────────────────────────────────────────────────────
 function detect(name){
   const n=name.toLowerCase();
@@ -764,8 +781,6 @@ window.addEventListener('keydown',e=>{
   if((e.key==='f'||e.key==='F')&&!e.metaKey&&!e.ctrlKey&&!e.altKey){   // leave Cmd/Ctrl+F (find) alone
     e.preventDefault();if(!e.repeat)toggleFullscreen();return;
   }
-  const i=['1','2','3','4'].indexOf(e.key);
-  if(i>-1)toggleMute(STEMS[i]);
 });
 
 // Screen off / app backgrounded: stop decoding video and stop the UI timer.
