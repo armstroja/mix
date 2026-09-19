@@ -130,7 +130,7 @@ button:focus-visible,#dot:focus-visible{outline:1px solid var(--seg-on);outline-
 
 <!-- background.mp4 sits in the same folder as this file. preload=none keeps it off
      the wire until the user actually starts playback. -->
-<video id="bg" class="show" muted loop playsinline preload="none" disablepictureinpicture disableremoteplayback></video>
+<video id="bg" muted loop playsinline preload="none" disablepictureinpicture disableremoteplayback></video>
 <video id="bg2" muted playsinline preload="none" disablepictureinpicture disableremoteplayback></video>
 
 <div id="app">
@@ -175,7 +175,8 @@ const KEYWORDS={
 // ── Power settings ────────────────────────────────────────────────
 const BG_SD         = 'background.mp4';      // phones / tablets / data-saver
 const BG_HQ         = 'background-hq.mp4';   // laptops and desktops (falls back to SD if missing)
-const BG_WHILE_IDLE = true;   // false: video only rolls while audio is playing
+const BG_WHILE_IDLE = false;  // false: the background only loads and rolls while audio is playing, and goes black when it stops
+const BG_IDLE_MS    = 1200;   // how long audio must be stopped before the background fades to black (so seeking doesn't flash it)
 const TICK_MS       = 250;    // progress updates per second = 1000/TICK_MS
 const IDLE_SUSPEND  = 20000;  // ms of pause before the audio hardware is released
 const TINT          = true;   // tint the stem meters with the video's dominant colour
@@ -218,10 +219,10 @@ const onBg=(ev,fn)=>vids.forEach(v=>v.addEventListener(ev,e=>{if(v===bgVid)fn(e)
 // ── Background video ──────────────────────────────────────────────
 // Decoding video is the single biggest battery cost here, so it only runs
 // when it can actually be seen and (optionally) only while audio plays.
-let bgLoaded=false;
+let bgLoaded=false,bgStale=false;   // bgStale: the search changed while nothing was playing, so load it on the next play
 function bgPlay(){
   if(document.hidden)return;
-  if(!bgLoaded){applyBg();return;}   // first call: pick + load a source
+  if(!bgLoaded||bgStale){bgStale=false;applyBg();return;}   // first play (or a changed search): pick + load a source
   if(!bgVid.getAttribute('src'))return; // still resolving
   bgVid.play().catch(()=>{
     // autoplay blocked (iOS Low Power Mode does this): retry on first touch
@@ -231,7 +232,31 @@ function bgPlay(){
   });
 }
 function bgPause(){if(bgLoaded)bgVid.pause();}
-function bgSync(){ (playing||BG_WHILE_IDLE) ? bgPlay() : bgPause(); }
+// Show or hide the picture. Hidden = plain black page, so the UI colours go back to their white
+// defaults and the Pexels credit goes away with the video.
+function bgShow(on){
+  if(on){
+    if(bgLoaded)bgVid.classList.add('show');
+    showCredit();
+  }else{
+    vids.forEach(v=>v.classList.remove('show'));
+    creditEl.hidden=true;
+    applyTint();                       // no arguments = reset every tint colour and the Safari bar to black
+  }
+}
+// Audio playing: load/roll the background. Audio stopped for BG_IDLE_MS: pause the video and go black.
+// Resuming later just un-hides the same clip, so no new Pexels request is made.
+let bgIdleT=0;
+function bgSync(){
+  clearTimeout(bgIdleT);
+  if(playing||BG_WHILE_IDLE){bgPlay();bgShow(true);}
+  else bgIdleT=setTimeout(()=>{if(!playing){bgPause();bgShow(false);}},BG_IDLE_MS);
+}
+// A changed search while paused is stored and only fetched when playback starts.
+function refreshBg(){
+  if(playing||BG_WHILE_IDLE)return applyBg();
+  bgStale=true;return Promise.resolve();
+}
 // ── Tint the stem meters from the video ───────────────────────────
 // Every 2.5s while a clip is playing, the current frame is shrunk to 32x18 and the most
 // prominent colour is found by hue-bucketing (grey, near-black and near-white pixels
@@ -542,7 +567,8 @@ $('pxgo').addEventListener('click',async()=>{
   px.q=qIn.value.trim()||DEFAULT_Q;
   px.list=null;px.idx=0;savePx();
   setStat('');
-  await applyBg();
+  await refreshBg();
+  if(!playing&&!BG_WHILE_IDLE){setStat('saved: loads when you press play');return;}   // no Pexels request until music plays
   if(!statEl.textContent)bgPanel.hidden=true;   // stay open only if something went wrong
 });
 $('pxreset').addEventListener('click',()=>{
@@ -550,7 +576,7 @@ $('pxreset').addEventListener('click',()=>{
   try{localStorage.removeItem(LS_KEY);}catch(e){}
   qIn.value='';setStat('');creditEl.hidden=true;
   bgPanel.hidden=true;
-  applyBg();
+  refreshBg();
 });
 
 // ── Keep audio independent of the video ───────────────────────────
