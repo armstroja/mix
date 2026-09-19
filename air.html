@@ -59,11 +59,11 @@ body.drag #app{opacity:.55;}
   background:var(--seg-off);
   transition:background .06s,transform .1s,opacity .2s;
 }
-.seg.on{background:var(--seg-on);}
+.seg.on{background:var(--seg-on);box-shadow:0 0 8px var(--shadow-c);}
 .seg:active{transform:scale(.9);}
 /* while playing: the fader range dims to a ghost and the live level lights up inside it */
-.strip.live .seg.on{background:var(--seg-ghost);}
-.strip.live .seg.on.hot{background:var(--seg-on);}
+.strip.live .seg.on{background:var(--seg-ghost);box-shadow:none;}
+.strip.live .seg.on.hot{background:var(--seg-on);box-shadow:0 0 8px var(--shadow-c);}
 .name{
   margin-top:6px;background:none;border:none;cursor:pointer;font:inherit;
   font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink);text-shadow:var(--shadow);
@@ -184,10 +184,10 @@ const MAX_CLIP_MB     = 12;     // skip Pexels files heavier than this; only wor
 const PX_WIDTH_HQ     = 1280;   // desktop: smallest Pexels file at least this wide (720p). 1920 = ~2-3x the download
 const PX_WIDTH_SD     = 960;    // phones / data-saver
 const CHROME_L        = 56;     // Safari's top bar takes the mixer colour at this lightness (%). The meters' "on" colour reads as ~56% on dark video; lower = darker, subtler bar
-const SEG_L_LIGHT     = 78;     // meter lightness (%) on dark scenes: lighter = more contrast
-const SEG_L_DARK      = 26;     // meter lightness (%) on bright scenes: darker = more contrast
-const INK_L_LIGHT     = 92;     // labels, buttons, seek bar text on dark scenes
-const INK_L_DARK      = 14;     // the same, on bright scenes
+const LIGHTEN         = 25;     // meters take the scene's colour and make it this many lightness points lighter
+const SEG_L_MIN       = 72;     // ...but never darker than this (keeps them visible on dark scenes)
+const SEG_L_MAX       = 92;     // ...and never lighter than this (keeps some colour on bright scenes)
+const INK_L           = 94;     // labels, buttons and seek bar text
 
 // ── Pexels proxy ──────────────────────────────────────────────────
 // Search requests go to your Cloudflare Worker, which adds the API key server-side.
@@ -279,11 +279,12 @@ function setChrome(c){
   document.documentElement.style.setProperty('--chrome',c);   // Safari 26+: page/edge background
   if(themeMeta)themeMeta.setAttribute('content',c);            // older Safari + Chrome: theme-color
 }
-// The meters sit in the middle of the frame, so that's the region whose brightness matters.
-// Bright scene -> the whole UI goes dark; dark scene -> the whole UI goes light. Flipping
-// needs a clear crossing (two thresholds) so a mid-tone scene doesn't flicker between the two.
-// One hue and one light/dark decision drive every colour, set on <html> so it all matches.
-let uiDark=false;
+// The scene's average colour drives the whole UI: same hue and saturation everywhere, and the
+// meters take that colour and make it lighter (LIGHTEN points, kept between SEG_L_MIN and
+// SEG_L_MAX so they're never dull on dark scenes or bleached on bright ones like a sky).
+// Everything is set once on <html> so it all matches. sceneLum() reads the brightness of the
+// middle of the frame, where the meters sit, and only decides how much extra body and halo
+// the light meters need against a bright backdrop.
 function sceneLum(d){
   let sum=0,n=0;
   for(let y=3;y<15;y++)for(let x=9;x<23;x++){
@@ -296,29 +297,30 @@ const TINT_VARS=['--seg-on','--seg-off','--seg-ghost','--ink','--faint','--line'
 function applyTint(rgb,lum){
   const root=document.documentElement.style;
   if(lum===undefined){TINT_VARS.forEach(v=>root.removeProperty(v));setChrome('#000');return;}
-  if(lum>0.58)uiDark=true;else if(lum<0.46)uiDark=false;
-  let h=0,sat=0;                                             // greyscale scene: neutral UI, still contrast-adjusted
+  let h=0,sat=0,cl=lum*100;                                  // the scene colour: hue, saturation, lightness (%)
   if(rgb){
     const [r,g,b]=rgb,mx=Math.max(r,g,b),mn=Math.min(r,g,b),c=mx-mn;
     if(mx===r)h=((g-b)/c+6)%6;else if(mx===g)h=(b-r)/c+2;else h=(r-g)/c+4;
     h=Math.round(h*60);
     const l0=(mx+mn)/2,s0=c/(1-Math.abs(2*l0-1));
     sat=Math.round(Math.min(90,Math.max(45,s0*100)));        // keep it colourful but not neon
-  }
+    cl=l0*100;
+  }                                                          // (greyscale scene: neutral, lightened the same way)
+  const L=Math.round(Math.min(SEG_L_MAX,Math.max(SEG_L_MIN,cl+LIGHTEN)));
+  const t=Math.min(1,Math.max(0,(lum-0.4)/0.4));             // 0 on dark scenes .. 1 on bright ones
   const txs=Math.min(sat,55);                                // text is tinted more gently so it stays readable
   const col=(s,l,a)=>'hsla('+h+','+s+'%,'+l+'%,'+a+')';
-  const L=uiDark?SEG_L_DARK:SEG_L_LIGHT,IL=uiDark?INK_L_DARK:INK_L_LIGHT;
   const set=(k,v)=>root.setProperty(k,v);
-  set('--seg-on',col(sat,L,uiDark?.9:.8));
-  set('--seg-off',col(sat,L,uiDark?.2:.16));
-  set('--seg-ghost',col(sat,L,uiDark?.38:.3));
+  set('--seg-on',col(sat,L,.8+.12*t));
+  set('--seg-off',col(sat,L,.16+.1*t));                      // light on light needs a bit more body to read
+  set('--seg-ghost',col(sat,L,.3+.14*t));
   set('--dot-on',col(sat,L,.28));
   set('--fill',col(sat,L,.95));
-  set('--ink',col(txs,IL,.88));
-  set('--faint',col(txs,IL,.62));
-  set('--line',col(txs,IL,.5));
-  set('--field',col(txs,uiDark?96:10,uiDark?.35:.28));       // search box: light glass on bright scenes, dark glass on dark
-  set('--shadow-c',col(txs,uiDark?96:4,uiDark?.4:.35));      // halo is the opposite tone of the text
+  set('--ink',col(txs,INK_L,.9));
+  set('--faint',col(txs,INK_L,.65));
+  set('--line',col(txs,INK_L,.5));
+  set('--field',col(txs,10,.28));                            // dark glass behind the search box
+  set('--shadow-c',col(txs,4,.35+.25*t));                    // soft dark halo, stronger on bright scenes
   setChrome(rgb?'hsl('+h+','+sat+'%,'+CHROME_L+'%)':'#000');
 }
 function sampleTint(){
