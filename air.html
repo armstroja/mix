@@ -150,7 +150,7 @@ button:focus-visible,#dot:focus-visible{outline:1px solid var(--seg-on);outline-
       <button id="fsbtn" class="pbtn" type="button">fullscreen</button>
     </div>
     <div id="bgpanel" hidden>
-      <input id="pxq" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="search: abstract, rain, neon…">
+      <input id="pxq" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="search: clouds, rain, neon…">
       <div class="prow">
         <button id="pxgo" class="pbtn" type="button">go</button>
         <button id="pxreset" class="pbtn" type="button">reset</button>
@@ -193,6 +193,7 @@ const INK_L_DARK      = 14;     // the same, on bright scenes
 // Search requests go to your Cloudflare Worker, which adds the API key server-side.
 // No key ever touches this page. Change this to your Worker's URL.
 const PX_API        = 'https://patient-mode-2bc6.optimizedjack.workers.dev/search';
+const DEFAULT_Q     = 'blue sky with clouds';   // searched automatically on load until you pick your own term with "background"
 // The current clip loops until the next one has buffered. Some phones refuse to preload
 // hidden videos, so if the next clip still isn't ready after this long we hand over anyway
 // (the old clip keeps looping on screen until the new one is actually playing).
@@ -369,7 +370,7 @@ function showCredit(){
 
 async function pexelsFetch(){
   const qs=new URLSearchParams({
-    query:px.q||'abstract',orientation:'landscape',size:'medium',
+    query:px.q||DEFAULT_Q,orientation:'landscape',size:'medium',
     min_duration:'5',max_duration:'20',per_page:'40'
   });
   const r=await fetch(PX_API+'?'+qs);
@@ -382,9 +383,9 @@ async function pexelsFetch(){
       .map(f=>({w:f.width,l:f.link,s:f.size||0}))
       .sort((a,b)=>a.w-b.w)
   })).filter(v=>v.files.length);
-  if(!found.length)throw new Error('no results for \u201c'+(px.q||'abstract')+'\u201d');
+  if(!found.length)throw new Error('no results for \u201c'+(px.q||DEFAULT_Q)+'\u201d');
   for(let i=found.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[found[i],found[j]]=[found[j],found[i]];}
-  px.list=found.slice(0,10);px.idx=0;
+  px.list=found.slice(0,10);px.idx=0;px.lq=px.q||DEFAULT_Q;   // lq = the search this playlist belongs to
   savePx();
 }
 // smallest mp4 that's at least the target width, else the biggest available
@@ -399,8 +400,9 @@ function chooseFile(files,hq){
 
 async function resolveBg(){
   const hq=wantHQ();
-  if(px.q){                          // Pexels is used once someone has searched
+  {                                  // Pexels is tried first (default term "clouds"); the local file is the fallback
     try{
+      if(px.lq!==(px.q||DEFAULT_Q))px.list=null;     // cached playlist is from a different search (or an older build)
       if(!px.list||!px.list.length){setStat('fetching\u2026');await pexelsFetch();}
       setStat('');showCredit();
       playlist=px.list.length>1;
@@ -419,7 +421,7 @@ async function applyBg(){
   clearStandby();
   bgVid.classList.add('show');other().classList.remove('show');
   bgVid.loop=true;                  // always loops; a playlist hands over once the next clip is ready
-  setBgSrc(src,px.q&&cur()?cur().img:'');
+  setBgSrc(src,cur()?cur().img:'');
   bgSync();
 }
 
@@ -532,10 +534,10 @@ onBg('error',()=>{
 
 bgToggle.addEventListener('click',()=>{
   bgPanel.hidden=!bgPanel.hidden;
-  if(!bgPanel.hidden)qIn.value=px.q||'';
+  if(!bgPanel.hidden)qIn.value=px.q||DEFAULT_Q;
 });
 $('pxgo').addEventListener('click',async()=>{
-  px.q=qIn.value.trim()||'abstract';
+  px.q=qIn.value.trim()||DEFAULT_Q;
   px.list=null;px.idx=0;savePx();
   setStat('');
   await applyBg();
