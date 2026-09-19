@@ -132,6 +132,7 @@ button:focus-visible,#dot:focus-visible{outline:1px solid var(--seg-on);outline-
   <div id="hint">drop stems anywhere</div>
   <div id="bgwrap">
     <div id="bottomrow">
+      <button id="loadbtn" class="pbtn" type="button">load stems</button>
       <button id="bgbtn" type="button">background</button>
       <button id="fsbtn" class="pbtn" type="button">fullscreen</button>
     </div>
@@ -515,12 +516,13 @@ function keepAlive(){
 }));
 
 // ── UI ────────────────────────────────────────────────────────────
-STEMS.forEach(id=>{
+STEMS.forEach((id,n)=>{
   const strip=document.createElement('div');
   strip.className='strip empty';
   const fn=document.createElement('div');fn.className='fn';
   const name=document.createElement('button');
   name.className='name';name.type='button';name.textContent=id;
+  name.title='click: load / replace this stem  ·  key '+(n+1)+': mute';
   name.addEventListener('click',()=>pick(id));
   strip.append(fn,name);
   segs[id]=[];
@@ -723,17 +725,51 @@ function detect(name){
   for(const id of STEMS)if(KEYWORDS[id].some(k=>n.includes(k)))return id;
   return null;
 }
-// Match files to stems by name; anything left over fills empty slots.
-// A single file picked from a stem's own label goes to that stem.
+function flash(msg){
+  hintEl.textContent=msg;
+  setTimeout(()=>{hintEl.textContent=hasAny()?'':'drop stems anywhere';},2500);
+}
+function recomputeDur(){
+  // the song is as long as its longest stem, so replacing a stem can shorten it too
+  dur=Math.max(0,...STEMS.map(id=>st[id].buf?st[id].buf.duration:0));
+  offset=Math.min(offset,Math.max(0,dur-0.05));
+}
+// Empty every slot: used when a whole new set of stems arrives.
+function clearAll(){
+  if(playing)pause();
+  STEMS.forEach(id=>{
+    const s=st[id];
+    stopSrc(id);
+    s.buf=null;s.muted=false;s.vol=STEPS;s.prev=STEPS;
+    refresh(id);applyGain(id);
+    strips[id].classList.add('empty');strips[id].classList.remove('live');
+    fnEls[id].textContent='';
+  });
+  dur=0;offset=0;lastSec=-1;render(0,true);
+  hintEl.textContent='drop stems anywhere';
+}
+// How incoming files are placed:
+//  - one file from a stem's own label -> that stem (replaces whatever is there)
+//  - files whose names identify distinct stems -> those stems, replaced in place
+//  - otherwise they fill the empty slots, and if there are more files than empty slots
+//    it's a new song: everything is cleared first so old and new never get mixed
 function assign(files,target){
   if(!files.length)return;
   if(target&&files.length===1){load(target,files[0]);return;}
+  files=files.slice(0,STEMS.length);
+  const ids=files.map(f=>detect(f.name));
+  const named=ids.every((id,i)=>id&&ids.indexOf(id)===i);   // every file names a different stem
+  let empty=STEMS.filter(id=>!st[id].buf);
+  if(files.length===1&&!ids[0]&&!empty.length){              // full mixer + unrecognisable name
+    flash('tap a stem name to replace it');return;
+  }
+  if(files.length>1&&!named&&files.length>empty.length){clearAll();empty=STEMS.slice();}
   const taken=new Set(),rest=[];
   files.forEach(f=>{
     const id=detect(f.name);
     if(id&&!taken.has(id)){taken.add(id);load(id,f);}else rest.push(f);
   });
-  const empty=STEMS.filter(id=>!st[id].buf&&!taken.has(id));
+  empty=empty.filter(id=>!taken.has(id));
   rest.forEach((f,i)=>{if(empty[i])load(empty[i],f);});
 }
 async function load(id,file){
@@ -741,7 +777,7 @@ async function load(id,file){
   try{
     const buf=await ctx.decodeAudioData(await file.arrayBuffer());
     st[id].buf=buf;
-    dur=Math.max(dur,buf.duration);
+    recomputeDur();
     strips[id].classList.remove('empty');
     fnEls[id].textContent=file.name.replace(/\.[^.]+$/,'');
     hintEl.textContent='';
@@ -749,12 +785,12 @@ async function load(id,file){
     else{lastSec=-1;render(offset,true);}
   }catch(e){
     console.error(e);
-    hintEl.textContent='couldn\u2019t decode '+id;
-    setTimeout(()=>{hintEl.textContent=hasAny()?'':'drop stems anywhere';},2000);
+    flash('couldn\u2019t decode '+id);
   }
 }
 let pickTarget=null;
 function pick(id){pickTarget=id;fileEl.click();}
+$('loadbtn').addEventListener('click',()=>pick(null));
 fileEl.addEventListener('change',()=>{
   assign([...fileEl.files],pickTarget);
   fileEl.value='';
@@ -779,13 +815,19 @@ function toggleFullscreen(){
 dot.addEventListener('click',toggle);
 window.addEventListener('keydown',e=>{
   if(e.target.tagName==='INPUT')return;
-  if(e.code==='Space'){e.preventDefault();toggle();return;}
-  if(e.key==='ArrowLeft'){e.preventDefault();seek(pos()-5);return;}
-  if(e.key==='ArrowRight'){e.preventDefault();seek(pos()+5);return;}
+  if(e.code==='Space'){e.preventDefault();if(!e.repeat)toggle();return;}
+  const step=e.shiftKey?15:5;                                            // Shift = bigger jumps
+  if(e.key==='ArrowLeft'){e.preventDefault();seek(pos()-step);return;}
+  if(e.key==='ArrowRight'){e.preventDefault();seek(pos()+step);return;}
+  if(!e.metaKey&&!e.ctrlKey&&!e.altKey&&/^[1-4]$/.test(e.key)){          // 1-4: mute / unmute vocals, drums, bass, other
+    e.preventDefault();if(!e.repeat)toggleMute(STEMS[+e.key-1]);return;
+  }
   if((e.key==='f'||e.key==='F')&&!e.metaKey&&!e.ctrlKey&&!e.altKey){   // leave Cmd/Ctrl+F (find) alone
     e.preventDefault();if(!e.repeat)toggleFullscreen();return;
   }
 });
+// Space on a focused button also "clicks" it on keyup: swallow that so play/pause fires once
+window.addEventListener('keyup',e=>{if(e.code==='Space'&&e.target.tagName!=='INPUT')e.preventDefault();});
 
 // Screen off / app backgrounded: stop decoding video and stop the UI timer.
 // Audio keeps playing; the clock is rebuilt from ctx.currentTime on return.
