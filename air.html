@@ -11,14 +11,25 @@
   --ink:rgba(255,255,255,.8);--faint:rgba(255,255,255,.55);--line:rgba(255,255,255,.5);
   --seg-off:rgba(255,255,255,.14);--seg-on:rgba(255,255,255,.62);
   --dot-on:rgba(255,255,255,.22);
-  --shadow:0 0 8px rgba(0,0,0,.35);
+  --fill:rgba(255,255,255,.9);--field:rgba(0,0,0,.28);
+  --shadow-c:rgba(0,0,0,.35);
+  --shadow:0 0 8px var(--shadow-c);
 }
 /* object-fit:cover = scale (keeping aspect ratio) until the video fills the
    whole viewport, then crop whatever overflows. Never distorts. */
 @property --seg-on{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.62);}
 @property --seg-ghost{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.26);}
 @property --seg-off{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.14);}
-#cols{transition:--seg-on 2s linear,--seg-off 2s linear,--seg-ghost 2s linear;}
+@property --ink{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.8);}
+@property --faint{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.55);}
+@property --line{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.5);}
+@property --dot-on{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.22);}
+@property --fill{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.9);}
+@property --field{syntax:'<color>';inherits:true;initial-value:rgba(0,0,0,.28);}
+@property --shadow-c{syntax:'<color>';inherits:true;initial-value:rgba(0,0,0,.35);}
+/* every UI colour is set once on <html> from JS (scene hue + light/dark), and fades there,
+   so meters, labels, buttons, the play dot, the seek bar and the credit all stay in step */
+:root{transition:background-color 2s linear,--seg-on 2s linear,--seg-off 2s linear,--seg-ghost 2s linear,--ink 2s linear,--faint 2s linear,--line 2s linear,--dot-on 2s linear,--fill 2s linear,--field 2s linear,--shadow-c 2s linear;}
 /* Layering is explicit: videos at z-index 0, UI (#app) at 1, credit at 2.
    The body paints NO background, so nothing solid can sit on top of the videos. */
 #bg,#bg2{position:fixed;inset:0;width:100%;height:100vh;height:100dvh;object-fit:cover;object-position:center;z-index:0;background:var(--chrome,#000);pointer-events:none;opacity:0;transition:opacity .8s;}
@@ -28,7 +39,7 @@ html,body{height:100%;height:100dvh;overflow:hidden;overscroll-behavior:none;}
    page/edge background, older Safari uses the theme-color meta tag; both are kept in sync.
    Only <html> carries the colour: if <body> also painted it, that background would render
    on top of the videos instead of behind them. */
-html{background:var(--chrome,#000);transition:background-color 2s linear;}
+html{background:var(--chrome,#000);}
 body{
   background:transparent;color:var(--ink);
   font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;
@@ -41,6 +52,8 @@ body.drag #app{opacity:.55;}
 .strip{display:flex;flex-direction:column-reverse;align-items:center;gap:5px;width:52px;}
 .strip.empty .seg{opacity:.35;}
 .strip.muted .seg{opacity:.25;}
+.strip{transition:opacity .15s;-webkit-touch-callout:none;}
+.strip.dimmed{opacity:.3;}
 .seg{
   width:52px;height:15px;border:none;border-radius:6px;cursor:pointer;
   background:var(--seg-off);
@@ -76,7 +89,7 @@ body.drag #app{opacity:.55;}
 #bar{flex:1;position:relative;height:23px;cursor:pointer;touch-action:none;}
 #bar::before{content:'';position:absolute;left:0;right:0;top:11px;height:1px;background:var(--line);}
 #fill{
-  position:absolute;left:0;right:0;top:11px;height:1px;background:rgba(255,255,255,.9);
+  position:absolute;left:0;right:0;top:11px;height:1px;background:var(--fill);
   transform-origin:left;transform:scaleX(0);will-change:transform;
   transition:transform .25s linear;
 }
@@ -93,7 +106,7 @@ body.drag #app{opacity:.55;}
 #bgpanel{display:flex;flex-direction:column;align-items:center;gap:8px;}
 #bgpanel[hidden]{display:none;}
 #bgpanel input{
-  width:min(240px,70vw);background:rgba(0,0,0,.28);border:1px solid var(--line);border-radius:6px;
+  width:min(240px,70vw);background:var(--field);border:1px solid var(--line);border-radius:6px;
   padding:7px 10px;font-family:inherit;font-size:11px;color:var(--ink);text-align:center;outline:none;
   -webkit-user-select:text;user-select:text;
 }
@@ -171,6 +184,10 @@ const MAX_CLIP_MB     = 12;     // skip Pexels files heavier than this; only wor
 const PX_WIDTH_HQ     = 1280;   // desktop: smallest Pexels file at least this wide (720p). 1920 = ~2-3x the download
 const PX_WIDTH_SD     = 960;    // phones / data-saver
 const CHROME_L        = 56;     // Safari's top bar takes the mixer colour at this lightness (%). The meters' "on" colour reads as ~56% on dark video; lower = darker, subtler bar
+const SEG_L_LIGHT     = 78;     // meter lightness (%) on dark scenes: lighter = more contrast
+const SEG_L_DARK      = 26;     // meter lightness (%) on bright scenes: darker = more contrast
+const INK_L_LIGHT     = 92;     // labels, buttons, seek bar text on dark scenes
+const INK_L_DARK      = 14;     // the same, on bright scenes
 
 // ── Pexels proxy ──────────────────────────────────────────────────
 // Search requests go to your Cloudflare Worker, which adds the API key server-side.
@@ -180,8 +197,10 @@ const PX_API        = 'https://patient-mode-2bc6.optimizedjack.workers.dev/searc
 // hidden videos, so if the next clip still isn't ready after this long we hand over anyway
 // (the old clip keeps looping on screen until the new one is actually playing).
 const NEXT_WAIT_MS  = 20000;
+const HOLD_MS       = 300;    // how long to press and hold a stem (or its 1-4 key) before it solos
 
 let ctx=null;
+let soloId=null;   // stem currently held solo (null = normal mix)
 const st={};
 STEMS.forEach(id=>{st[id]={buf:null,gain:null,src:null,vol:STEPS,prev:STEPS,muted:false,an:null,lvl:0,shown:0};});
 let playing=false,startT=0,offset=0,dur=0,timer=0,idleT=0,meterT=0;
@@ -259,25 +278,54 @@ function setChrome(c){
   document.documentElement.style.setProperty('--chrome',c);   // Safari 26+: page/edge background
   if(themeMeta)themeMeta.setAttribute('content',c);            // older Safari + Chrome: theme-color
 }
-function applyTint(rgb){
-  const el=$('cols');
-  if(!rgb){el.style.removeProperty('--seg-on');el.style.removeProperty('--seg-off');el.style.removeProperty('--seg-ghost');setChrome('#000');return;}
-  const [r,g,b]=rgb,mx=Math.max(r,g,b),mn=Math.min(r,g,b),c=mx-mn;
-  let h;
-  if(mx===r)h=((g-b)/c+6)%6;else if(mx===g)h=(b-r)/c+2;else h=(r-g)/c+4;
-  h=Math.round(h*60);
-  const l0=(mx+mn)/2,s0=c/(1-Math.abs(2*l0-1));
-  const sat=Math.round(Math.min(90,Math.max(45,s0*100)));   // keep it colourful but not neon
-  el.style.setProperty('--seg-on','hsla('+h+','+sat+'%,70%,.8)');
-  el.style.setProperty('--seg-off','hsla('+h+','+sat+'%,70%,.16)');
-  el.style.setProperty('--seg-ghost','hsla('+h+','+sat+'%,70%,.3)');
-  setChrome('hsl('+h+','+sat+'%,'+CHROME_L+'%)');
+// The meters sit in the middle of the frame, so that's the region whose brightness matters.
+// Bright scene -> the whole UI goes dark; dark scene -> the whole UI goes light. Flipping
+// needs a clear crossing (two thresholds) so a mid-tone scene doesn't flicker between the two.
+// One hue and one light/dark decision drive every colour, set on <html> so it all matches.
+let uiDark=false;
+function sceneLum(d){
+  let sum=0,n=0;
+  for(let y=3;y<15;y++)for(let x=9;x<23;x++){
+    const i=(y*32+x)*4;
+    sum+=(0.2126*d[i]+0.7152*d[i+1]+0.0722*d[i+2])/255;n++;
+  }
+  return sum/n;
+}
+const TINT_VARS=['--seg-on','--seg-off','--seg-ghost','--ink','--faint','--line','--dot-on','--fill','--field','--shadow-c'];
+function applyTint(rgb,lum){
+  const root=document.documentElement.style;
+  if(lum===undefined){TINT_VARS.forEach(v=>root.removeProperty(v));setChrome('#000');return;}
+  if(lum>0.58)uiDark=true;else if(lum<0.46)uiDark=false;
+  let h=0,sat=0;                                             // greyscale scene: neutral UI, still contrast-adjusted
+  if(rgb){
+    const [r,g,b]=rgb,mx=Math.max(r,g,b),mn=Math.min(r,g,b),c=mx-mn;
+    if(mx===r)h=((g-b)/c+6)%6;else if(mx===g)h=(b-r)/c+2;else h=(r-g)/c+4;
+    h=Math.round(h*60);
+    const l0=(mx+mn)/2,s0=c/(1-Math.abs(2*l0-1));
+    sat=Math.round(Math.min(90,Math.max(45,s0*100)));        // keep it colourful but not neon
+  }
+  const txs=Math.min(sat,55);                                // text is tinted more gently so it stays readable
+  const col=(s,l,a)=>'hsla('+h+','+s+'%,'+l+'%,'+a+')';
+  const L=uiDark?SEG_L_DARK:SEG_L_LIGHT,IL=uiDark?INK_L_DARK:INK_L_LIGHT;
+  const set=(k,v)=>root.setProperty(k,v);
+  set('--seg-on',col(sat,L,uiDark?.9:.8));
+  set('--seg-off',col(sat,L,uiDark?.2:.16));
+  set('--seg-ghost',col(sat,L,uiDark?.38:.3));
+  set('--dot-on',col(sat,L,.28));
+  set('--fill',col(sat,L,.95));
+  set('--ink',col(txs,IL,.88));
+  set('--faint',col(txs,IL,.62));
+  set('--line',col(txs,IL,.5));
+  set('--field',col(txs,uiDark?96:10,uiDark?.35:.28));       // search box: light glass on bright scenes, dark glass on dark
+  set('--shadow-c',col(txs,uiDark?96:4,uiDark?.4:.35));      // halo is the opposite tone of the text
+  setChrome(rgb?'hsl('+h+','+sat+'%,'+CHROME_L+'%)':'#000');
 }
 function sampleTint(){
   if(!tintOK||bgVid.readyState<2||bgVid.paused||document.hidden)return;
   try{
     tcx.drawImage(bgVid,0,0,32,18);
-    applyTint(dominant(tcx.getImageData(0,0,32,18).data));
+    const d=tcx.getImageData(0,0,32,18).data;
+    applyTint(dominant(d),sceneLum(d));
   }catch(e){tintOK=false;applyTint(null);}          // tainted canvas: give up for this clip
 }
 onBg('playing',()=>{sampleTint();if(!tintT)tintT=setInterval(sampleTint,2500);});
@@ -515,6 +563,43 @@ function keepAlive(){
   keepAlive();
 }));
 
+// ── Hold to solo ──────────────────────────────────────────────────
+// Press and hold a stem (finger, mouse, or its 1-4 key) and only that stem is heard.
+// Let go and the mix comes back as it was. A quick tap/click still does its normal job
+// (load a file, set the fader), and the click that ends a hold is swallowed.
+function setSolo(id){
+  soloId=id;
+  STEMS.forEach(i=>{
+    strips[i].classList.toggle('soloed',i===id);
+    strips[i].classList.toggle('dimmed',!!id&&i!==id);
+    applyGain(i);
+  });
+}
+function startSolo(id){if(!st[id].buf)return false;setSolo(id);return true;}
+function endSolo(id){if(soloId===id)setSolo(null);}
+function holdable(strip,id){
+  let timer=0,fired=false,x0=0,y0=0,guardUntil=0;
+  const cancel=()=>{clearTimeout(timer);timer=0;};
+  strip.addEventListener('pointerdown',e=>{
+    if(e.button>0)return;                              // primary button / touch only
+    cancel();fired=false;x0=e.clientX;y0=e.clientY;
+    timer=setTimeout(()=>{timer=0;fired=startSolo(id);},HOLD_MS);
+  });
+  strip.addEventListener('pointermove',e=>{            // moved away: it's a drag, not a hold
+    if(timer&&Math.hypot(e.clientX-x0,e.clientY-y0)>12)cancel();
+  });
+  const release=()=>{
+    cancel();
+    if(fired){fired=false;endSolo(id);guardUntil=performance.now()+400;}
+  };
+  window.addEventListener('pointerup',release);        // window-level: works if released off the strip
+  window.addEventListener('pointercancel',release);
+  strip.addEventListener('contextmenu',e=>e.preventDefault());   // touch long-press menu
+  strip.addEventListener('click',e=>{                  // don't load/set volume when a hold ends
+    if(performance.now()<guardUntil){e.stopImmediatePropagation();e.preventDefault();}
+  },true);
+}
+
 // ── UI ────────────────────────────────────────────────────────────
 STEMS.forEach((id,n)=>{
   const strip=document.createElement('div');
@@ -522,7 +607,7 @@ STEMS.forEach((id,n)=>{
   const fn=document.createElement('div');fn.className='fn';
   const name=document.createElement('button');
   name.className='name';name.type='button';name.textContent=id;
-  name.title='click: load / replace this stem  ·  key '+(n+1)+': mute';
+  name.title='click: load / replace  ·  hold: solo  ·  key '+(n+1)+': mute (hold to solo)';
   name.addEventListener('click',()=>pick(id));
   strip.append(fn,name);
   segs[id]=[];
@@ -533,6 +618,7 @@ STEMS.forEach((id,n)=>{
     strip.appendChild(b);segs[id].push(b);
   }
   strips[id]=strip;fnEls[id]=fn;
+  holdable(strip,id);
   $('cols').appendChild(strip);
 });
 
@@ -554,9 +640,13 @@ function ensureCtx(){
     applyGain(id);
   });
 }
+// While a stem is soloed only it is heard (at its own fader level, even if it was muted);
+// everything else goes silent. Releasing the solo puts the mix back exactly as it was.
+function audible(id){return soloId?id===soloId:!st[id].muted;}
+function effVol(id){const s=st[id];return (soloId===id&&s.muted)?(s.prev||STEPS):s.vol;}
 function applyGain(id){
   const s=st[id];if(!s.gain)return;
-  s.gain.gain.setTargetAtTime(s.muted?0:s.vol/STEPS,ctx.currentTime,0.02);
+  s.gain.gain.setTargetAtTime(audible(id)?effVol(id)/STEPS:0,ctx.currentTime,0.02);
 }
 function setVol(id,v){
   const s=st[id];
@@ -638,7 +728,7 @@ function meterTick(){
   STEMS.forEach(id=>{
     const s=st[id];
     let n=0;
-    if(s.buf&&s.an&&!s.muted){
+    if(s.buf&&s.an&&audible(id)){
       s.an.getByteTimeDomainData(mbuf);
       let sum=0;
       for(let i=0;i<mbuf.length;i++){const v=(mbuf[i]-128)/128;sum+=v*v;}
@@ -646,7 +736,7 @@ function meterTick(){
       n=Math.max(0,Math.min(STEPS,Math.round((db+42)/42*STEPS)));
     }
     s.lvl=n>=s.lvl?n:Math.max(n,s.lvl-1);
-    const shown=Math.min(s.lvl,s.vol);
+    const shown=Math.min(s.lvl,effVol(id));
     if(shown!==s.shown){s.shown=shown;paintMeter(id);}
   });
 }
@@ -737,6 +827,7 @@ function recomputeDur(){
 // Empty every slot: used when a whole new set of stems arrives.
 function clearAll(){
   if(playing)pause();
+  setSolo(null);
   STEMS.forEach(id=>{
     const s=st[id];
     stopSrc(id);
@@ -819,20 +910,36 @@ window.addEventListener('keydown',e=>{
   const step=e.shiftKey?15:5;                                            // Shift = bigger jumps
   if(e.key==='ArrowLeft'){e.preventDefault();seek(pos()-step);return;}
   if(e.key==='ArrowRight'){e.preventDefault();seek(pos()+step);return;}
-  if(!e.metaKey&&!e.ctrlKey&&!e.altKey&&/^[1-4]$/.test(e.key)){          // 1-4: mute / unmute vocals, drums, bass, other
-    e.preventDefault();if(!e.repeat)toggleMute(STEMS[+e.key-1]);return;
+  if(!e.metaKey&&!e.ctrlKey&&!e.altKey&&/^[1-4]$/.test(e.key)){          // 1-4: tap to mute / unmute vocals, drums, bass, other; hold to solo
+    e.preventDefault();
+    if(e.repeat||keyHold[e.key])return;                                    // tap = mute (on release), hold = solo
+    const id=STEMS[+e.key-1],h={id,solo:false};
+    h.t=setTimeout(()=>{h.solo=startSolo(id);},HOLD_MS);
+    keyHold[e.key]=h;return;
   }
   if((e.key==='f'||e.key==='F')&&!e.metaKey&&!e.ctrlKey&&!e.altKey){   // leave Cmd/Ctrl+F (find) alone
     e.preventDefault();if(!e.repeat)toggleFullscreen();return;
   }
 });
-// Space on a focused button also "clicks" it on keyup: swallow that so play/pause fires once
-window.addEventListener('keyup',e=>{if(e.code==='Space'&&e.target.tagName!=='INPUT')e.preventDefault();});
+// Space on a focused button also "clicks" it on keyup: swallow that so play/pause fires once.
+// 1-4 keys: a quick release mutes/unmutes, a release after a hold just ends the solo.
+const keyHold={};
+window.addEventListener('keyup',e=>{
+  const h=keyHold[e.key];
+  if(h){clearTimeout(h.t);delete keyHold[e.key];if(h.solo)endSolo(h.id);else toggleMute(h.id);return;}
+  if(e.code==='Space'&&e.target.tagName!=='INPUT')e.preventDefault();
+});
+// focus lost mid-hold (alt-tab, etc.): the release would never arrive, so let go now
+function dropHolds(){
+  Object.keys(keyHold).forEach(k=>{clearTimeout(keyHold[k].t);delete keyHold[k];});
+  setSolo(null);
+}
+window.addEventListener('blur',dropHolds);
 
 // Screen off / app backgrounded: stop decoding video and stop the UI timer.
 // Audio keeps playing; the clock is rebuilt from ctx.currentTime on return.
 document.addEventListener('visibilitychange',()=>{
-  if(document.hidden){bgPause();stopTimer();stopMeter();}
+  if(document.hidden){dropHolds();bgPause();stopTimer();stopMeter();}
   else{
     if(playing&&ctx&&ctx.state!=='running')ctx.resume();
     bgSync();
