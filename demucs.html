@@ -1,0 +1,1093 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#000000">
+<title>MIXER AIR</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+:root{
+  --ink:rgba(255,255,255,.8);--faint:rgba(255,255,255,.55);--line:rgba(255,255,255,.5);
+  --seg-off:rgba(255,255,255,.14);--seg-on:rgba(255,255,255,.62);
+  --dot-on:rgba(255,255,255,.22);
+  --fill:rgba(255,255,255,.9);--field:rgba(0,0,0,.28);
+  --shadow-c:rgba(0,0,0,.35);
+  --shadow:0 0 8px var(--shadow-c);
+}
+/* object-fit:cover = scale (keeping aspect ratio) until the video fills the
+   whole viewport, then crop whatever overflows. Never distorts. */
+@property --seg-on{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.62);}
+@property --seg-ghost{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.26);}
+@property --seg-off{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.14);}
+@property --ink{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.8);}
+@property --faint{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.55);}
+@property --line{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.5);}
+@property --dot-on{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.22);}
+@property --fill{syntax:'<color>';inherits:true;initial-value:rgba(255,255,255,.9);}
+@property --field{syntax:'<color>';inherits:true;initial-value:rgba(0,0,0,.28);}
+@property --shadow-c{syntax:'<color>';inherits:true;initial-value:rgba(0,0,0,.35);}
+/* every UI colour is set once on <html> from JS (scene hue + light/dark), and fades there,
+   so meters, labels, buttons, the play dot, the seek bar and the credit all stay in step */
+:root{transition:background-color 2s linear,--seg-on 2s linear,--seg-off 2s linear,--seg-ghost 2s linear,--ink 2s linear,--faint 2s linear,--line 2s linear,--dot-on 2s linear,--fill 2s linear,--field 2s linear,--shadow-c 2s linear;}
+/* Layering is explicit: videos at z-index 0, UI (#app) at 1, credit at 2.
+   The body paints NO background, so nothing solid can sit on top of the videos. */
+#bg,#bg2{position:fixed;inset:0;width:100%;height:100vh;height:100dvh;object-fit:cover;object-position:center;z-index:0;background:var(--chrome,#000);pointer-events:none;opacity:0;transition:opacity .8s;}
+#bg.show,#bg2.show{opacity:1;}
+html,body{height:100%;height:100dvh;overflow:hidden;overscroll-behavior:none;}
+/* --chrome is the mixer's tint colour (set from JS). Safari 26+ tints its top bar from the
+   page/edge background, older Safari uses the theme-color meta tag; both are kept in sync.
+   Only <html> carries the colour: if <body> also painted it, that background would render
+   on top of the videos instead of behind them. */
+html{background:var(--chrome,#000);}
+body{
+  background:transparent;color:var(--ink);
+  font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;
+  display:flex;align-items:center;justify-content:center;
+  -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;
+}
+#app{position:relative;z-index:1;display:flex;flex-direction:column;align-items:center;gap:30px;padding:24px;transition:opacity .2s;}
+body.drag #app{opacity:.55;}
+#cols{display:flex;gap:16px;align-items:flex-end;}
+.strip{display:flex;flex-direction:column-reverse;align-items:center;gap:5px;width:52px;}
+.strip.empty .seg{opacity:.35;}
+.strip.muted .seg{opacity:.25;}
+.strip{transition:opacity .15s;-webkit-touch-callout:none;}
+.strip.dimmed{opacity:.3;}
+.seg{
+  width:52px;height:15px;border:none;border-radius:6px;cursor:pointer;
+  background:var(--seg-off);
+  transition:background .06s,transform .1s,opacity .2s;
+}
+.seg.on{background:var(--seg-on);box-shadow:0 0 8px var(--shadow-c);}
+.seg:active{transform:scale(.9);}
+/* while playing: the fader range dims to a ghost and the live level lights up inside it */
+.strip.live .seg.on{background:var(--seg-ghost);box-shadow:none;}
+.strip.live .seg.on.hot{background:var(--seg-on);box-shadow:0 0 8px var(--shadow-c);}
+.name{
+  margin-top:6px;background:none;border:none;cursor:pointer;font:inherit;
+  font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink);text-shadow:var(--shadow);
+}
+.strip.empty .name{color:var(--faint);}
+.fn{
+  width:100%;height:10px;font-size:7px;letter-spacing:.06em;text-align:center;
+  color:var(--faint);text-shadow:var(--shadow);white-space:nowrap;overflow:hidden;text-transform:uppercase;
+  -webkit-mask-image:linear-gradient(to right,#000 calc(100% - 14px),transparent);
+          mask-image:linear-gradient(to right,#000 calc(100% - 14px),transparent);
+}
+#dot{
+  width:56px;height:56px;border-radius:50%;cursor:pointer;
+  background:transparent;border:1px solid var(--line);box-shadow:var(--shadow);transition:background .2s;
+}
+#dot.playing{background:var(--dot-on);}
+#transport{display:flex;align-items:center;gap:10px;width:min(340px,80vw);}
+.seekbtn{
+  background:none;border:none;font-family:inherit;cursor:pointer;flex-shrink:0;
+  font-size:9px;letter-spacing:.05em;color:var(--faint);text-shadow:var(--shadow);padding:8px 2px;
+}
+.seekbtn:active{color:var(--ink);}
+#bar{flex:1;position:relative;height:23px;cursor:pointer;touch-action:none;}
+#bar::before{content:'';position:absolute;left:0;right:0;top:11px;height:1px;background:var(--line);}
+#fill{
+  position:absolute;left:0;right:0;top:11px;height:1px;background:var(--fill);
+  transform-origin:left;transform:scaleX(0);will-change:transform;
+  transition:transform .25s linear;
+}
+#fill.jump{transition:none;}
+#time{text-shadow:var(--shadow);font-size:9px;letter-spacing:.08em;color:var(--faint);min-width:64px;text-align:right;font-variant-numeric:tabular-nums;}
+#hint{text-shadow:var(--shadow);font-size:8px;letter-spacing:.22em;text-transform:uppercase;color:var(--faint);height:10px;}
+#credit{
+  position:fixed;z-index:2;left:0;right:0;bottom:max(10px,env(safe-area-inset-bottom));text-align:center;
+  font-size:8px;letter-spacing:.18em;text-transform:uppercase;color:var(--faint);text-shadow:var(--shadow);pointer-events:none;
+}
+#credit[hidden]{display:none;}
+#credit a{color:inherit;text-decoration:none;border-bottom:1px solid var(--line);pointer-events:auto;}
+#credit a:hover{color:var(--ink);}
+button:focus-visible,#dot:focus-visible{outline:1px solid var(--seg-on);outline-offset:3px;}
+@media (prefers-reduced-motion:reduce){#fill{transition:none;}}
+</style>
+</head>
+<body>
+
+<!-- background.mp4 sits in the same folder as this file and is the fallback if Pexels fails.
+     preload=none keeps the videos off the wire until the user actually starts playback. -->
+<video id="bg" muted loop playsinline preload="none" disablepictureinpicture disableremoteplayback></video>
+<video id="bg2" muted playsinline preload="none" disablepictureinpicture disableremoteplayback></video>
+
+<div id="app">
+  <div id="cols"></div>
+  <button id="dot" type="button" aria-label="Play / pause"></button>
+  <div id="transport">
+    <button id="seekback" class="seekbtn" type="button" aria-label="seek back 5 seconds">−5</button>
+    <div id="bar"><div id="fill"></div></div>
+    <button id="seekfwd" class="seekbtn" type="button" aria-label="seek forward 5 seconds">+5</button>
+    <div id="time">–:–– / –:––</div>
+  </div>
+  <div id="hint">drop a song or stems</div>
+</div>
+<div id="credit" hidden>video by <a id="creditName" href="#" target="_blank" rel="noopener"></a> on <a id="creditPx" href="#" target="_blank" rel="noopener">pexels</a></div>
+<input type="file" id="file" accept="audio/*,.mp3,.m4a,.wav,.aif,.aiff,.flac,.ogg" multiple hidden>
+
+<script>
+const STEMS=['vocals','drums','bass','other'];
+const STEPS=7;
+const KEYWORDS={
+  vocals:['vocal','vox','voice','sing','lead','melody','choir','lyric','harmony'],
+  drums: ['drum','beat','kick','snare','hat','perc','rhythm','cymbal','clap'],
+  bass:  ['bass','sub','808','groove'],
+  other: ['other','inst','guitar','piano','keys','synth','pad','string','horn','brass','fx','misc'],
+};
+
+// ── Background search (hardcoded) ─────────────────────────────────
+// Change this to change what the background clips show. A different term automatically
+// fetches a fresh playlist the next time the page loads.
+const BG_QUERY      = 'blue sky with clouds';
+// Double-tap the middle button to cycle through these searches (one per double-tap, in order).
+const TAP_QUERIES   = ['Green Amazon Jungle','Red Arid Landscape','Brown dirt Earth'];
+const DOUBLE_TAP_MS = 300;    // a single tap on the middle button waits this long for a second tap before it plays/pauses; lower = snappier play, tighter double-tap
+
+// ── Stem separation (HTDemucs via ONNX Runtime Web, runs entirely in the browser) ──
+// Drop or pick ONE audio file whose name doesn't name a stem and it is split into 4 stems.
+const MODEL_URL     = 'https://huggingface.co/StemSplitio/htdemucs-onnx/resolve/main/htdemucs_fp16weights.onnx';
+const MODEL_CACHE   = 'mixerair-model-v1';   // Cache Storage bucket: the model is downloaded once per browser
+const MODEL_BYTES   = 166e6;                 // used for the download % if the server sends no content-length
+const ORT_BASE      = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.0/dist/';
+const ORT_URL       = ORT_BASE+'ort.webgpu.min.js';   // the WebGPU build (plain ort.min.js has no WebGPU, CPU only)
+const SEG           = 343980;                // the model's fixed input length: 7.8 s at 44.1 kHz
+const OVERLAP       = 0.25;                  // chunks overlap by this fraction and are cross-faded
+const HOP           = Math.floor(SEG*(1-OVERLAP));
+const SPLIT_SR      = 44100;                 // the model only works at 44.1 kHz stereo
+const MAX_SPLIT_SEC = 600;                   // refuse songs longer than this (memory: ~11 float channels per song)
+const STEM_ORDER    = ['drums','bass','other','vocals'];   // the model's output order
+
+// ── Power settings ────────────────────────────────────────────────
+const BG_SD         = 'background.mp4';      // local fallback: phones / tablets / data-saver
+const BG_HQ         = 'background-hq.mp4';   // local fallback: laptops and desktops (falls back to SD if missing)
+const BG_WHILE_IDLE = false;  // false: the background only loads and rolls while audio is playing, and goes black when it stops
+const BG_IDLE_MS    = 1200;   // how long audio must be stopped before the background fades to black (so seeking doesn't flash it)
+const TICK_MS       = 250;    // progress updates per second = 1000/TICK_MS
+const IDLE_SUSPEND  = 20000;  // ms of pause before the audio hardware is released
+const TINT          = true;   // tint the stem meters with the video's dominant colour
+const METER_MS      = 66;     // level-meter refresh in ms (~15 fps); raise it to save battery
+const MAX_CLIP_MB   = 12;     // skip Pexels files heavier than this; only works if Pexels reports a file size (often it doesn't); 0 = no cap
+const PX_WIDTH_HQ   = 1280;   // desktop: smallest Pexels file at least this wide (720p). 1920 = ~2-3x the download
+const PX_WIDTH_SD   = 960;    // phones / data-saver
+const CHROME_L      = 56;     // Safari's top bar takes the mixer colour at this lightness (%)
+const LIGHTEN       = 25;     // meters take the scene's colour and make it this many lightness points lighter
+const SEG_L_MIN     = 72;     // ...but never darker than this (keeps them visible on dark scenes)
+const SEG_L_MAX     = 92;     // ...and never lighter than this (keeps some colour on bright scenes)
+const INK_L         = 94;     // labels, buttons and seek bar text
+
+// ── Pexels proxy ──────────────────────────────────────────────────
+// Search requests go to your Cloudflare Worker, which adds the API key server-side.
+// No key ever touches this page. Change this to your Worker's URL.
+const PX_API        = 'https://patient-mode-2bc6.optimizedjack.workers.dev/search';
+// The current clip loops until the next one has buffered. Some phones refuse to preload
+// hidden videos, so if the next clip still isn't ready after this long we hand over anyway
+// (the old clip keeps looping on screen until the new one is actually playing).
+const NEXT_WAIT_MS  = 20000;
+const HOLD_MS       = 300;    // how long to press and hold a stem (or its 1-4 key) before it solos
+
+let ctx=null;
+let soloId=null;   // stem currently held solo (null = normal mix)
+const st={};
+STEMS.forEach(id=>{st[id]={buf:null,gain:null,src:null,vol:STEPS,prev:STEPS,muted:false,an:null,lvl:0,shown:0};});
+let playing=false,startT=0,offset=0,dur=0,timer=0,idleT=0,meterT=0;
+
+const $=id=>document.getElementById(id);
+const dot=$('dot'),fillEl=$('fill'),timeEl=$('time'),barEl=$('bar'),hintEl=$('hint'),fileEl=$('file');
+const seekBackBtn=$('seekback'),seekFwdBtn=$('seekfwd');
+const strips={},segs={},fnEls={};
+const vids=[$('bg'),$('bg2')];       // double-buffered: one plays, the other preloads the next clip
+let bgVid=vids[0];                   // the active one
+const other=()=>bgVid===vids[0]?vids[1]:vids[0];
+const onBg=(ev,fn)=>vids.forEach(v=>v.addEventListener(ev,e=>{if(v===bgVid)fn(e);}));
+
+// ── Background video ──────────────────────────────────────────────
+// Decoding video is the single biggest battery cost here, so it only runs
+// when it can actually be seen and (optionally) only while audio plays.
+let bgLoaded=false;
+function bgPlay(){
+  if(document.hidden)return;
+  if(!bgLoaded){applyBg();return;}   // first play: pick + load a source
+  if(!bgVid.getAttribute('src'))return; // still resolving
+  bgVid.play().catch(()=>{
+    // autoplay blocked (iOS Low Power Mode does this): retry on first touch
+    const kick=()=>{bgSync();};
+    window.addEventListener('pointerdown',kick,{once:true});
+    window.addEventListener('keydown',kick,{once:true});
+  });
+}
+function bgPause(){if(bgLoaded)bgVid.pause();}
+// Show or hide the picture. Hidden = plain black page, so the UI colours go back to their white
+// defaults and the Pexels credit goes away with the video.
+function bgShow(on){
+  if(on){
+    if(bgLoaded)bgVid.classList.add('show');
+    showCredit();
+  }else{
+    vids.forEach(v=>v.classList.remove('show'));
+    creditEl.hidden=true;
+    applyTint();                       // no arguments = reset every tint colour and the Safari bar to black
+  }
+}
+// Audio playing: load/roll the background. Audio stopped for BG_IDLE_MS: pause the video and go black.
+// Resuming later just un-hides the same clip, so no new Pexels request is made.
+let bgIdleT=0;
+function bgSync(){
+  clearTimeout(bgIdleT);
+  if(playing||BG_WHILE_IDLE){bgPlay();bgShow(true);}
+  else bgIdleT=setTimeout(()=>{if(!playing){bgPause();bgShow(false);}},BG_IDLE_MS);
+}
+// ── Tint the stem meters from the video ───────────────────────────
+// Every 2.5s while a clip is playing, the current frame is shrunk to 32x18 and the most
+// prominent colour is found by hue-bucketing (grey, near-black and near-white pixels
+// are ignored, more colourful pixels count for more). The meters cross-fade to it.
+// Reading pixels needs a same-origin or CORS-enabled video; otherwise the meters just
+// stay white.
+const tcv=document.createElement('canvas');tcv.width=32;tcv.height=18;
+const tcx=tcv.getContext('2d',{willReadFrequently:true});
+let tintOK=TINT,tintT=0;
+
+function applyCors(el,src){
+  // Only ask for CORS on cross-origin clips (asking for it on file:// or same-origin
+  // loads would make them fail for no reason).
+  let remote=false;
+  try{remote=new URL(src,location.href).origin!==location.origin&&/^https?:/i.test(src);}catch(e){}
+  if(TINT&&remote)el.crossOrigin='anonymous';else el.removeAttribute('crossorigin');
+  el._tintOK=TINT;
+}
+function setBgSrc(src,poster){
+  applyCors(bgVid,src);
+  tintOK=TINT;
+  bgVid.poster=safeUrl(poster)==='#'?'':poster;   // still frame shown while the clip downloads
+  bgVid.src=src;
+}
+function dominant(d){
+  const W=12,bins=Array.from({length:W},()=>({w:0,r:0,g:0,b:0}));
+  let n=0;
+  for(let i=0;i<d.length;i+=4){
+    const r=d[i]/255,g=d[i+1]/255,b=d[i+2]/255;
+    const mx=Math.max(r,g,b),mn=Math.min(r,g,b),c=mx-mn,l=(mx+mn)/2;
+    n++;
+    if(c<0.08||l<0.1||l>0.95)continue;
+    let h;
+    if(mx===r)h=((g-b)/c+6)%6;else if(mx===g)h=(b-r)/c+2;else h=(r-g)/c+4;
+    const k=bins[Math.floor(h/6*W)%W];
+    k.w+=c;k.r+=r*c;k.g+=g*c;k.b+=b*c;
+  }
+  let best=bins[0];
+  for(const k of bins)if(k.w>best.w)best=k;
+  if(best.w<n*0.03)return null;                     // effectively greyscale
+  return [best.r/best.w,best.g/best.w,best.b/best.w];
+}
+const themeMeta=document.querySelector('meta[name="theme-color"]');
+function setChrome(c){
+  document.documentElement.style.setProperty('--chrome',c);   // Safari 26+: page/edge background
+  if(themeMeta)themeMeta.setAttribute('content',c);            // older Safari + Chrome: theme-color
+}
+// The scene's average colour drives the whole UI: same hue and saturation everywhere, and the
+// meters take that colour and make it lighter (LIGHTEN points, kept between SEG_L_MIN and
+// SEG_L_MAX so they're never dull on dark scenes or bleached on bright ones like a sky).
+// Everything is set once on <html> so it all matches. sceneLum() reads the brightness of the
+// middle of the frame, where the meters sit, and only decides how much extra body and halo
+// the light meters need against a bright backdrop.
+function sceneLum(d){
+  let sum=0,n=0;
+  for(let y=3;y<15;y++)for(let x=9;x<23;x++){
+    const i=(y*32+x)*4;
+    sum+=(0.2126*d[i]+0.7152*d[i+1]+0.0722*d[i+2])/255;n++;
+  }
+  return sum/n;
+}
+const TINT_VARS=['--seg-on','--seg-off','--seg-ghost','--ink','--faint','--line','--dot-on','--fill','--field','--shadow-c'];
+function applyTint(rgb,lum){
+  const root=document.documentElement.style;
+  if(lum===undefined){TINT_VARS.forEach(v=>root.removeProperty(v));setChrome('#000');return;}
+  let h=0,sat=0,cl=lum*100;                                  // the scene colour: hue, saturation, lightness (%)
+  if(rgb){
+    const [r,g,b]=rgb,mx=Math.max(r,g,b),mn=Math.min(r,g,b),c=mx-mn;
+    if(mx===r)h=((g-b)/c+6)%6;else if(mx===g)h=(b-r)/c+2;else h=(r-g)/c+4;
+    h=Math.round(h*60);
+    const l0=(mx+mn)/2,s0=c/(1-Math.abs(2*l0-1));
+    sat=Math.round(Math.min(90,Math.max(45,s0*100)));        // keep it colourful but not neon
+    cl=l0*100;
+  }                                                          // (greyscale scene: neutral, lightened the same way)
+  const L=Math.round(Math.min(SEG_L_MAX,Math.max(SEG_L_MIN,cl+LIGHTEN)));
+  const t=Math.min(1,Math.max(0,(lum-0.4)/0.4));             // 0 on dark scenes .. 1 on bright ones
+  const txs=Math.min(sat,55);                                // text is tinted more gently so it stays readable
+  const col=(s,l,a)=>'hsla('+h+','+s+'%,'+l+'%,'+a+')';
+  const set=(k,v)=>root.setProperty(k,v);
+  set('--seg-on',col(sat,L,.8+.12*t));
+  set('--seg-off',col(sat,L,.16+.1*t));                      // light on light needs a bit more body to read
+  set('--seg-ghost',col(sat,L,.3+.14*t));
+  set('--dot-on',col(sat,L,.28));
+  set('--fill',col(sat,L,.95));
+  set('--ink',col(txs,INK_L,.9));
+  set('--faint',col(txs,INK_L,.65));
+  set('--line',col(txs,INK_L,.5));
+  set('--field',col(txs,10,.28));
+  set('--shadow-c',col(txs,4,.35+.25*t));                    // soft dark halo, stronger on bright scenes
+  setChrome(rgb?'hsl('+h+','+sat+'%,'+CHROME_L+'%)':'#000');
+}
+function sampleTint(){
+  if(!tintOK||bgVid.readyState<2||bgVid.paused||document.hidden)return;
+  try{
+    tcx.drawImage(bgVid,0,0,32,18);
+    const d=tcx.getImageData(0,0,32,18).data;
+    applyTint(dominant(d),sceneLum(d));
+  }catch(e){tintOK=false;applyTint(null);}          // tainted canvas: give up for this clip
+}
+onBg('playing',()=>{sampleTint();if(!tintT)tintT=setInterval(sampleTint,2500);});
+['pause','ended','emptied'].forEach(ev=>onBg(ev,()=>{clearInterval(tintT);tintT=0;}));
+
+// ── Source selection ──────────────────────────────────────────────
+// Capability check rather than user-agent sniffing: a mouse-and-hover device with a
+// wide window is a laptop/desktop; the network hints respect data-saver settings.
+function wantHQ(){
+  const c=navigator.connection;
+  if(c&&(c.saveData||c.effectiveType==='2g'||c.effectiveType==='slow-2g'||c.effectiveType==='3g'))return false;
+  if(matchMedia('(prefers-reduced-data: reduce)').matches)return false;
+  return matchMedia('(hover:hover) and (pointer:fine)').matches && innerWidth>=1000;
+}
+
+// ── Pexels (via your Cloudflare Worker) ───────────────────────────
+// One search fetches a shuffled playlist of up to 10 clips for BG_QUERY. The playlist
+// (with the current position) is cached in localStorage on this device, so after that first
+// fetch there are no more API calls: reloads resume the cached playlist. Editing BG_QUERY
+// makes the cache stale and a new playlist is fetched.
+const LS_KEY='mixerair:pexels';
+let px={};
+try{px=JSON.parse(localStorage.getItem(LS_KEY)||'null')||{};}catch(e){}
+delete px.pick;                     // old single-video cache format
+const savePx=()=>{try{localStorage.setItem(LS_KEY,JSON.stringify(px));}catch(e){}};
+if('key' in px){delete px.key;savePx();}   // older builds stored the API key here: scrub it
+let bgQuery=BG_QUERY,qIdx=-1,bgGen=0;      // bgQuery = the search in use right now; bgGen lets a newer load cancel an older one
+{const i=TAP_QUERIES.indexOf(px.lq);if(i>-1){qIdx=i;bgQuery=px.lq;}}   // a double-tap choice survives reloads
+const creditEl=$('credit');
+const safeUrl=u=>(typeof u==='string'&&u.startsWith('https://'))?u:'#';
+const cur=()=>px.list&&px.list[px.idx||0];
+let playlist=false;                 // true while stepping through several Pexels clips
+
+function showCredit(){
+  const p=cur();
+  if(!p){creditEl.hidden=true;return;}
+  const n=$('creditName');
+  n.textContent=p.name||'unknown';n.href=safeUrl(p.by);
+  $('creditPx').href=safeUrl(p.page);
+  creditEl.hidden=false;
+}
+
+async function pexelsFetch(){
+  const qs=new URLSearchParams({
+    query:bgQuery,orientation:'landscape',size:'medium',
+    min_duration:'5',max_duration:'20',per_page:'40'
+  });
+  const r=await fetch(PX_API+'?'+qs);
+  if(r.status===429)throw new Error('rate limited, try again later');
+  if(!r.ok)throw new Error('pexels error '+r.status);
+  const found=((await r.json()).videos||[]).map(v=>({
+    id:v.id,page:v.url,name:v.user&&v.user.name,by:v.user&&v.user.url,img:v.image,
+    files:(v.video_files||[])
+      .filter(f=>f.file_type==='video/mp4'&&f.width)
+      .map(f=>({w:f.width,l:f.link,s:f.size||0}))
+      .sort((a,b)=>a.w-b.w)
+  })).filter(v=>v.files.length);
+  if(!found.length)throw new Error('no results for \u201c'+bgQuery+'\u201d');
+  for(let i=found.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[found[i],found[j]]=[found[j],found[i]];}
+  px.list=found.slice(0,10);px.idx=0;px.lq=bgQuery;   // lq = the search this playlist belongs to
+  savePx();
+}
+// smallest mp4 that's at least the target width, else the biggest available
+function chooseFile(files,hq){
+  const target=hq?PX_WIDTH_HQ:PX_WIDTH_SD;
+  let i=files.findIndex(f=>f.w>=target);
+  if(i<0)i=files.length-1;
+  // heavy files start slowly: step down to a smaller one when the size is known
+  while(MAX_CLIP_MB&&i>0&&files[i].s>MAX_CLIP_MB*1048576)i--;
+  return files[i].l;
+}
+
+async function resolveBg(){
+  const hq=wantHQ();
+  try{                               // Pexels is tried first; the local file is the fallback
+    if(px.lq!==bgQuery)px.list=null;                 // cached playlist is from a different search (or an older build)
+    if(!px.list||!px.list.length)await pexelsFetch();
+    showCredit();
+    playlist=px.list.length>1;
+    return chooseFile(cur().files,hq);
+  }catch(e){
+    console.warn('Pexels:',e);
+  }
+  playlist=false;creditEl.hidden=true;
+  return hq?BG_HQ:BG_SD;
+}
+async function applyBg(){
+  bgLoaded=true;
+  const g=++bgGen;
+  const src=await resolveBg();
+  if(g!==bgGen)return;              // a newer search started while this one was resolving
+  clearStandby();
+  bgVid.classList.add('show');other().classList.remove('show');
+  bgVid.loop=true;                  // always loops; a playlist hands over once the next clip is ready
+  setBgSrc(src,cur()?cur().img:'');
+  bgSync();
+}
+// Double-tap: move on to the next search in TAP_QUERIES and fetch a fresh playlist for it.
+// While paused nothing is fetched; the new search loads when playback next starts.
+function nextTheme(){
+  qIdx=(qIdx+1)%TAP_QUERIES.length;
+  bgQuery=TAP_QUERIES[qIdx];
+  px.list=null;px.idx=0;savePx();
+  bgGen++;                          // cancel any load still in flight for the old search
+  clearStandby();playlist=false;
+  if(playing||BG_WHILE_IDLE)applyBg();
+  else bgLoaded=false;
+}
+
+// ── Playlist hand-over (double buffering) ─────────────────────────
+// While a clip plays, the next one is loaded into the hidden second <video>. The current
+// clip LOOPS the whole time. The moment the next clip has buffered, looping is switched
+// off so the current pass finishes cleanly, and 'ended' swaps to the new clip with a
+// cross-fade. So: repeat until the next one is fetched, then move on.
+let standbyIdx=-1,standbyReady=false,swapT=0,retiring=false;
+function clearStandby(){
+  clearTimeout(swapT);standbyIdx=-1;standbyReady=false;
+  const el=other();el.pause();
+  if(el.getAttribute('src')){el.removeAttribute('src');el.load();}   // abort any download
+}
+function prepNext(){
+  if(!playlist||!px.list||px.list.length<2)return;
+  const nxt=((px.idx||0)+1)%px.list.length,el=other();
+  const src=chooseFile(px.list[nxt].files,wantHQ());
+  standbyIdx=nxt;standbyReady=false;
+  applyCors(el,src);
+  el.loop=true;el.preload='auto';el.src=src;
+  bgVid.loop=true;                                   // keep repeating until the next clip is buffered
+  clearTimeout(swapT);
+  swapT=setTimeout(()=>{if(standbyIdx===nxt&&!standbyReady)swapTo(nxt);},NEXT_WAIT_MS);
+}
+function swapTo(nxt){
+  const inc=other(),out=bgVid;
+  clearTimeout(swapT);
+  px.idx=nxt;savePx();showCredit();
+  bgVid=inc;tintOK=TINT&&inc._tintOK!==false;
+  inc.loop=true;
+  standbyIdx=-1;standbyReady=false;
+  retiring=true;                                     // 'out' is still on screen: don't reuse it yet
+  // reveal only once the new clip is really playing, then free the old decoder
+  inc.addEventListener('playing',()=>{
+    inc.classList.add('show');out.classList.remove('show');
+    setTimeout(()=>{
+      retiring=false;
+      if(out!==bgVid&&standbyIdx===-1){out.pause();out.removeAttribute('src');out.load();}
+      if(playlist&&standbyIdx===-1)prepNext();       // now the spare element is free: load the next clip
+    },1000);
+  },{once:true});
+  bgSync();
+}
+function advance(){
+  if(!px.list||px.list.length<2)return;
+  const nxt=((px.idx||0)+1)%px.list.length;
+  if(standbyIdx===nxt&&standbyReady){swapTo(nxt);return;}
+  // Shouldn't normally happen (looping stays on until the next clip is ready), but if the
+  // clip ended anyway, just play it again.
+  bgVid.loop=true;bgVid.currentTime=0;bgSync();
+  if(standbyIdx!==nxt)prepNext();
+}
+// standby element events
+vids.forEach(v=>{
+  v.addEventListener('canplaythrough',()=>{      // stricter than 'canplay': buffered enough to play to the end without stalling
+    if(v===bgVid||standbyIdx<0||!v.getAttribute('src'))return;
+    standbyReady=true;
+    clearTimeout(swapT);
+    bgVid.loop=false;                                // finish this pass, then 'ended' hands over
+  });
+  v.addEventListener('error',()=>{
+    if(v===bgVid)return;                       // the active one is handled below
+    const src=v.getAttribute('src');
+    if(!src)return;
+    if(v.hasAttribute('crossorigin')){         // no CORS from this host: retry plain, no tint
+      v.removeAttribute('crossorigin');v._tintOK=false;v.src=src;return;
+    }
+    const i=px.list?px.list.findIndex(x=>x.files.some(f=>f.l===src)):-1;
+    if(i>-1){
+      px.list.splice(i,1);
+      if(i<(px.idx||0))px.idx--;
+      savePx();
+    }
+    clearStandby();
+    if(px.list&&px.list.length>1)prepNext();
+    else{playlist=false;bgVid.loop=true;}
+  });
+});
+// once the active clip is playing, start loading the next one
+onBg('playing',()=>{if(playlist&&standbyIdx===-1&&!retiring)prepNext();});
+onBg('ended',()=>{if(playlist)advance();});
+
+// If a file fails (missing HQ file, expired Pexels link...): skip that clip, or if the
+// whole playlist is dead, drop to the local SD file.
+onBg('error',()=>{
+  const src=bgVid.getAttribute('src');
+  if(bgVid.hasAttribute('crossorigin')){
+    // the host may not send CORS headers: retry the same clip plainly (no tint for it)
+    bgVid.removeAttribute('crossorigin');tintOK=false;bgVid._tintOK=false;
+    bgVid.src=src;bgSync();return;
+  }
+  if(src===BG_SD){console.warn(BG_SD+' not found next to this file');return;}
+  const i=px.list?px.list.findIndex(v=>v.files.some(f=>f.l===src)):-1;
+  if(i>-1){
+    px.list.splice(i,1);
+    if(px.list.length){
+      px.idx=i%px.list.length;savePx();clearStandby();
+      playlist=px.list.length>1;bgVid.loop=true;
+      showCredit();
+      setBgSrc(chooseFile(cur().files,wantHQ()),cur().img);
+      bgSync();return;
+    }
+    px.list=null;savePx();creditEl.hidden=true;
+  }
+  playlist=false;bgVid.loop=true;
+  setBgSrc(BG_SD);bgSync();
+});
+
+// ── Keep audio independent of the video ───────────────────────────
+// The background is decorative only: force it silent, ask iOS for a media audio
+// session, and if a clip starting makes the browser suspend or interrupt the
+// AudioContext (Safari does this), resume it straight away.
+vids.forEach(v=>{v.muted=true;v.defaultMuted=true;v.volume=0;});
+try{if(navigator.audioSession)navigator.audioSession.type='playback';}catch(e){}
+function keepAlive(){
+  if(playing&&ctx&&ctx.state!=='running')ctx.resume().catch(()=>{});
+}
+['play','playing','loadeddata','volumechange'].forEach(ev=>onBg(ev,()=>{
+  if(!bgVid.muted)bgVid.muted=true;
+  keepAlive();
+}));
+
+// ── Hold to solo ──────────────────────────────────────────────────
+// Press and hold a stem (finger, mouse, or its 1-4 key) and only that stem is heard.
+// Let go and the mix comes back as it was. A quick tap/click still does its normal job
+// (load a file, set the fader), and the click that ends a hold is swallowed.
+function setSolo(id){
+  soloId=id;
+  STEMS.forEach(i=>{
+    strips[i].classList.toggle('soloed',i===id);
+    strips[i].classList.toggle('dimmed',!!id&&i!==id);
+    applyGain(i);
+  });
+}
+function startSolo(id){if(!st[id].buf)return false;setSolo(id);return true;}
+function endSolo(id){if(soloId===id)setSolo(null);}
+function holdable(strip,id){
+  let timer=0,fired=false,x0=0,y0=0,guardUntil=0;
+  const cancel=()=>{clearTimeout(timer);timer=0;};
+  strip.addEventListener('pointerdown',e=>{
+    if(e.button>0)return;                              // primary button / touch only
+    cancel();fired=false;x0=e.clientX;y0=e.clientY;
+    timer=setTimeout(()=>{timer=0;fired=startSolo(id);},HOLD_MS);
+  });
+  strip.addEventListener('pointermove',e=>{            // moved away: it's a drag, not a hold
+    if(timer&&Math.hypot(e.clientX-x0,e.clientY-y0)>12)cancel();
+  });
+  const release=()=>{
+    cancel();
+    if(fired){fired=false;endSolo(id);guardUntil=performance.now()+400;}
+  };
+  window.addEventListener('pointerup',release);        // window-level: works if released off the strip
+  window.addEventListener('pointercancel',release);
+  strip.addEventListener('contextmenu',e=>e.preventDefault());   // touch long-press menu
+  strip.addEventListener('click',e=>{                  // don't load/set volume when a hold ends
+    if(performance.now()<guardUntil){e.stopImmediatePropagation();e.preventDefault();}
+  },true);
+}
+
+// ── UI ────────────────────────────────────────────────────────────
+STEMS.forEach((id,n)=>{
+  const strip=document.createElement('div');
+  strip.className='strip empty';
+  const fn=document.createElement('div');fn.className='fn';
+  const name=document.createElement('button');
+  name.className='name';name.type='button';name.textContent=id;
+  name.title='click: load / replace  ·  hold: solo  ·  key '+(n+1)+': mute (hold to solo)';
+  name.addEventListener('click',()=>pick(id));
+  strip.append(fn,name);
+  segs[id]=[];
+  for(let i=0;i<STEPS;i++){
+    const b=document.createElement('button');
+    b.className='seg on';b.type='button';b.setAttribute('aria-label',id+' level '+(i+1));
+    b.addEventListener('click',()=>setVol(id,i+1));
+    strip.appendChild(b);segs[id].push(b);
+  }
+  strips[id]=strip;fnEls[id]=fn;
+  holdable(strip,id);
+  $('cols').appendChild(strip);
+});
+
+function refresh(id){
+  const s=st[id];
+  segs[id].forEach((b,i)=>b.classList.toggle('on',i<s.vol));
+  strips[id].classList.toggle('muted',s.muted);
+}
+
+// ── Audio ─────────────────────────────────────────────────────────
+function ensureCtx(){
+  if(ctx)return;
+  ctx=new(window.AudioContext||window.webkitAudioContext)({latencyHint:'playback'});
+  ctx.onstatechange=keepAlive;
+  STEMS.forEach(id=>{
+    const g=ctx.createGain();g.connect(ctx.destination);
+    st[id].gain=g;
+    const an=ctx.createAnalyser();an.fftSize=2048;st[id].an=an;   // output left unconnected: that's fine
+    applyGain(id);
+  });
+}
+// While a stem is soloed only it is heard (at its own fader level, even if it was muted);
+// everything else goes silent. Releasing the solo puts the mix back exactly as it was.
+function audible(id){return soloId?id===soloId:!st[id].muted;}
+function effVol(id){const s=st[id];return (soloId===id&&s.muted)?(s.prev||STEPS):s.vol;}
+function applyGain(id){
+  const s=st[id];if(!s.gain)return;
+  s.gain.gain.setTargetAtTime(audible(id)?effVol(id)/STEPS:0,ctx.currentTime,0.02);
+}
+function setVol(id,v){
+  const s=st[id];
+  if(v>1)s.prev=v;
+  s.vol=v;s.muted=(v===1);
+  refresh(id);applyGain(id);
+}
+function toggleMute(id){
+  const s=st[id];if(!s.buf)return;
+  if(!s.muted){if(s.vol>1)s.prev=s.vol;s.muted=true;s.vol=1;}
+  else{s.muted=false;s.vol=s.prev||STEPS;}
+  refresh(id);applyGain(id);
+}
+function stopSrc(id){
+  const s=st[id];
+  try{s.src&&s.src.stop();}catch(e){}
+  if(s.src){s.src.onended=null;s.src.disconnect();}
+  s.src=null;
+}
+function spawn(id,off){
+  const s=st[id];if(!s.buf)return;
+  stopSrc(id);
+  const src=ctx.createBufferSource();
+  src.buffer=s.buf;src.connect(s.gain);if(s.an)src.connect(s.an);
+  src.start(0,Math.max(0,off%s.buf.duration));
+  s.src=src;
+}
+function hasAny(){return STEMS.some(id=>st[id].buf);}
+function pos(){return playing?ctx.currentTime-startT:offset;}
+
+function play(){
+  if(!hasAny()||playing)return;
+  ensureCtx();clearTimeout(idleT);
+  const go=()=>{
+    STEMS.forEach(id=>spawn(id,offset));
+    startT=ctx.currentTime-offset;
+    playing=true;dot.classList.add('playing');
+    bgSync();startTimer();startMeter();
+  };
+  if(ctx.state!=='running')ctx.resume().catch(()=>{}); // don't wait on it: Safari can leave the promise hanging
+  go();
+}
+function pause(){
+  if(!playing)return;
+  offset=ctx.currentTime-startT;
+  STEMS.forEach(stopSrc);
+  playing=false;dot.classList.remove('playing');
+  stopTimer();stopMeter();render(offset,true);bgSync();
+  // nothing is making sound: hand the audio hardware back after a while
+  clearTimeout(idleT);
+  idleT=setTimeout(()=>{if(!playing&&ctx&&ctx.state==='running')ctx.suspend();},IDLE_SUSPEND);
+}
+function toggle(){
+  if(splitting)return;
+  if(!hasAny()){pick(null);return;}
+  playing?pause():play();
+}
+function seek(t){
+  if(!dur)return;
+  t=Math.max(0,Math.min(dur-0.05,t));
+  const was=playing;
+  if(was)pause();
+  offset=t;render(t,true);
+  if(was)play();
+}
+
+// ── Level meters ──────────────────────────────────────────────────
+// Each stem has an analyser tapped before its fader. Every METER_MS the RMS level of the
+// last ~46ms is turned into dB and mapped onto the segments, capped at the fader setting
+// (so turning a stem down lowers the ceiling the bars bounce under). Fast attack, slow
+// release keeps it reading as moving bars rather than flicker. Only runs while playing
+// and visible; DOM classes are only touched when a stem's bar count actually changes.
+const mbuf=new Uint8Array(2048);
+function paintMeter(id){
+  const n=st[id].shown;
+  segs[id].forEach((b,i)=>b.classList.toggle('hot',i<n));
+}
+function meterTick(){
+  if(!playing||document.hidden)return;
+  STEMS.forEach(id=>{
+    const s=st[id];
+    let n=0;
+    if(s.buf&&s.an&&audible(id)){
+      s.an.getByteTimeDomainData(mbuf);
+      let sum=0;
+      for(let i=0;i<mbuf.length;i++){const v=(mbuf[i]-128)/128;sum+=v*v;}
+      const db=20*Math.log10(Math.sqrt(sum/mbuf.length)+1e-6);
+      n=Math.max(0,Math.min(STEPS,Math.round((db+42)/42*STEPS)));
+    }
+    s.lvl=n>=s.lvl?n:Math.max(n,s.lvl-1);
+    const shown=Math.min(s.lvl,effVol(id));
+    if(shown!==s.shown){s.shown=shown;paintMeter(id);}
+  });
+}
+function startMeter(){
+  stopMeter();
+  STEMS.forEach(id=>{if(st[id].buf)strips[id].classList.add('live');});
+  meterT=setInterval(meterTick,METER_MS);
+}
+function stopMeter(){
+  clearInterval(meterT);meterT=0;
+  STEMS.forEach(id=>{
+    st[id].lvl=0;st[id].shown=0;
+    strips[id].classList.remove('live');
+    segs[id].forEach(b=>b.classList.remove('hot'));
+  });
+}
+
+// ── Progress ──────────────────────────────────────────────────────
+// A 4 Hz timer plus a CSS transition on the bar, instead of a 60 fps
+// requestAnimationFrame loop. Same look, ~15x fewer wakeups, and it keeps
+// running when the tab is backgrounded (rAF does not).
+function fmt(s){const m=Math.floor(s/60),c=Math.floor(s%60);return m+':'+(c<10?'0':'')+c;}
+let lastSec=-1;
+function render(p,jump){
+  fillEl.classList.toggle('jump',!!jump);
+  fillEl.style.transform='scaleX('+(dur?Math.min(1,p/dur):0)+')';
+  const sec=Math.floor(p);
+  if(sec!==lastSec||!dur){                       // only touch the DOM text once a second
+    lastSec=sec;
+    timeEl.textContent=dur?fmt(p)+' / '+fmt(dur):'–:–– / –:––';
+  }
+}
+function startTimer(){stopTimer();timer=setInterval(tick,TICK_MS);tick();}
+function stopTimer(){clearInterval(timer);timer=0;}
+function tick(){
+  if(!playing)return;
+  const p=pos();
+  if(p>=dur){ // reached the end: stop and rewind
+    STEMS.forEach(stopSrc);
+    playing=false;offset=0;dot.classList.remove('playing');
+    stopTimer();stopMeter();render(0,true);bgSync();
+    clearTimeout(idleT);
+    idleT=setTimeout(()=>{if(!playing&&ctx&&ctx.state==='running')ctx.suspend();},IDLE_SUSPEND);
+    return;
+  }
+  render(p+TICK_MS/1000);   // aim one tick ahead so the CSS transition lands on time
+}
+
+// scrub: drag or click the line (mouse, touch and pen)
+let scrubbing=false,wasPlaying=false;
+const pct=e=>{const r=barEl.getBoundingClientRect();return Math.max(0,Math.min(1,(e.clientX-r.left)/r.width));};
+barEl.addEventListener('pointerdown',e=>{
+  if(!dur)return;
+  barEl.setPointerCapture(e.pointerId);
+  scrubbing=true;wasPlaying=playing;
+  if(playing)pause();
+  render(pct(e)*dur,true);
+});
+barEl.addEventListener('pointermove',e=>{if(scrubbing)render(pct(e)*dur,true);});
+barEl.addEventListener('pointerup',e=>{
+  if(!scrubbing)return;
+  scrubbing=false;
+  offset=pct(e)*dur;render(offset,true);
+  if(wasPlaying)play();
+});
+barEl.addEventListener('pointercancel',()=>{scrubbing=false;if(wasPlaying)play();});
+
+// mobile transport buttons — same seek the arrow keys do
+seekBackBtn.addEventListener('click',()=>seek(pos()-5));
+seekFwdBtn.addEventListener('click',()=>seek(pos()+5));
+
+// ── Loading ───────────────────────────────────────────────────────
+function detect(name){
+  const n=name.toLowerCase();
+  for(const id of STEMS)if(KEYWORDS[id].some(k=>n.includes(k)))return id;
+  return null;
+}
+let hintT=0;
+function setHint(t){clearTimeout(hintT);hintEl.textContent=t;}
+function flash(msg){
+  setHint(msg);
+  hintT=setTimeout(()=>{hintEl.textContent=hasAny()?'':'drop a song or stems';},2500);
+}
+function recomputeDur(){
+  // the song is as long as its longest stem, so replacing a stem can shorten it too
+  dur=Math.max(0,...STEMS.map(id=>st[id].buf?st[id].buf.duration:0));
+  offset=Math.min(offset,Math.max(0,dur-0.05));
+}
+// Empty every slot: used when a whole new set of stems arrives.
+function clearAll(){
+  if(playing)pause();
+  setSolo(null);
+  STEMS.forEach(id=>{
+    const s=st[id];
+    stopSrc(id);
+    s.buf=null;s.muted=false;s.vol=STEPS;s.prev=STEPS;
+    refresh(id);applyGain(id);
+    strips[id].classList.add('empty');strips[id].classList.remove('live');
+    fnEls[id].textContent='';
+  });
+  dur=0;offset=0;lastSec=-1;render(0,true);
+  hintEl.textContent='drop a song or stems';
+}
+// How incoming files are placed:
+//  - one file from a stem's own label -> that stem (replaces whatever is there)
+//  - ONE file whose name doesn't name a stem -> a whole song: it is split into 4 stems
+//  - files whose names identify distinct stems -> those stems, replaced in place
+//  - otherwise they fill the empty slots, and if there are more files than empty slots
+//    it's a new song: everything is cleared first so old and new never get mixed
+function assign(files,target){
+  if(splitting||!files.length)return;
+  if(target&&files.length===1){load(target,files[0]);return;}
+  if(files.length===1&&!detect(files[0].name)){splitSong(files[0]);return;}
+  files=files.slice(0,STEMS.length);
+  const ids=files.map(f=>detect(f.name));
+  const named=ids.every((id,i)=>id&&ids.indexOf(id)===i);   // every file names a different stem
+  let empty=STEMS.filter(id=>!st[id].buf);
+  if(files.length>1&&!named&&files.length>empty.length){clearAll();empty=STEMS.slice();}
+  const taken=new Set(),rest=[];
+  files.forEach(f=>{
+    const id=detect(f.name);
+    if(id&&!taken.has(id)){taken.add(id);load(id,f);}else rest.push(f);
+  });
+  empty=empty.filter(id=>!taken.has(id));
+  rest.forEach((f,i)=>{if(empty[i])load(empty[i],f);});
+}
+async function load(id,file){
+  ensureCtx();
+  try{
+    const buf=await ctx.decodeAudioData(await file.arrayBuffer());
+    st[id].buf=buf;
+    recomputeDur();
+    strips[id].classList.remove('empty');
+    fnEls[id].textContent=file.name.replace(/\.[^.]+$/,'');
+    hintEl.textContent='';
+    if(playing){spawn(id,pos());strips[id].classList.add('live');}
+    else{lastSec=-1;render(offset,true);}
+  }catch(e){
+    console.error(e);
+    flash('couldn\u2019t decode '+id);
+  }
+}
+// ── Split a whole song into stems (HTDemucs, ONNX Runtime Web) ────────────────
+// The 166 MB model is downloaded on first use and kept in the browser's Cache Storage.
+// It runs on WebGPU when the browser has it; otherwise on the CPU (works, but many times slower).
+// Nothing is uploaded anywhere. Long songs are cut into 7.8 s chunks that overlap and cross-fade.
+let splitting=false,dmSession=null,dmGpu=false,ortP=null;
+function setProgress(p){fillEl.classList.remove('jump');fillEl.style.transform='scaleX('+Math.max(0,Math.min(1,p))+')';}
+function loadOrt(){
+  if(window.ort)return Promise.resolve();
+  return ortP||(ortP=new Promise((ok,no)=>{
+    const s=document.createElement('script');s.src=ORT_URL;
+    s.onload=()=>{ort.env.wasm.wasmPaths=ORT_BASE;ok();};
+    s.onerror=()=>{ortP=null;no(new Error('couldn\u2019t load onnxruntime'));};
+    document.head.appendChild(s);
+  }));
+}
+async function modelBytes(){
+  let cache=null;
+  try{cache=await caches.open(MODEL_CACHE);}catch(e){}       // no Cache Storage (e.g. file://): just download each time
+  const hit=cache&&await cache.match(MODEL_URL);
+  if(hit)return hit.arrayBuffer();
+  const res=await fetch(MODEL_URL);
+  if(!res.ok)throw new Error('model download failed ('+res.status+')');
+  const total=+res.headers.get('content-length')||MODEL_BYTES,rd=res.body.getReader(),chunks=[];
+  let got=0;
+  for(;;){
+    const {done,value}=await rd.read();
+    if(done)break;
+    chunks.push(value);got+=value.length;
+    const p=Math.min(1,got/total);setProgress(p);setHint('downloading model '+Math.round(p*100)+'%');
+  }
+  const buf=new Uint8Array(got);let o=0;
+  for(const c of chunks){buf.set(c,o);o+=c.length;}
+  if(cache)try{await cache.put(MODEL_URL,new Response(buf,{headers:{'Content-Type':'application/octet-stream'}}));}catch(e){}
+  return buf.buffer;
+}
+async function getSession(forceCpu){
+  await loadOrt();
+  if(dmSession){try{await dmSession.release();}catch(e){}dmSession=null;}
+  const gpu=!forceCpu&&!!navigator.gpu;
+  const make=async eps=>{
+    setHint('loading model…');
+    const b=await modelBytes();
+    setProgress(0);setHint('starting model…');
+    return ort.InferenceSession.create(b,{executionProviders:eps});
+  };
+  try{dmSession=await make(gpu?['webgpu','wasm']:['wasm']);dmGpu=gpu;}
+  catch(e){
+    if(!gpu)throw e;
+    console.warn('webgpu failed, using cpu:',e);
+    dmSession=await make(['wasm']);dmGpu=false;
+  }
+}
+// One model call. If the GPU path dies mid-run, rebuild the session on the CPU and retry once.
+async function runModel(inp){
+  const feed=()=>({[dmSession.inputNames[0]]:new ort.Tensor('float32',inp,[1,2,SEG])});
+  try{return (await dmSession.run(feed()))[dmSession.outputNames[0]].data;}
+  catch(e){
+    if(!dmGpu)throw e;
+    console.warn('webgpu run failed, switching to cpu:',e);
+    await getSession(true);
+    return (await dmSession.run(feed()))[dmSession.outputNames[0]].data;
+  }
+}
+// The model needs 44.1 kHz stereo. Decoding through a 44.1 kHz offline context resamples for free.
+async function decodeSong(file){
+  const OAC=window.OfflineAudioContext||window.webkitOfflineAudioContext;
+  let d=await new OAC(2,1,SPLIT_SR).decodeAudioData(await file.arrayBuffer());
+  if(d.sampleRate!==SPLIT_SR){                    // older Safari: resample by rendering
+    const oc=new OAC(2,Math.ceil(d.duration*SPLIT_SR),SPLIT_SR),s=oc.createBufferSource();
+    s.buffer=d;s.connect(oc.destination);s.start();
+    d=await oc.startRendering();
+  }
+  return {L:d.getChannelData(0),R:d.numberOfChannels>1?d.getChannelData(1):d.getChannelData(0),len:d.length};
+}
+// Linear fade in/out over the overlap, flat in the middle. Never exactly 0 so every sample has weight.
+function crossfade(){
+  const w=new Float32Array(SEG).fill(1),r=Math.floor(SEG*OVERLAP/2);
+  for(let i=0;i<r;i++){const v=(i+1)/(r+1);w[i]=v;w[SEG-1-i]=v;}
+  return w;
+}
+// Cut L/R into overlapping SEG-long chunks, run infer() on each (returns 4 stems x 2 ch x SEG, flat),
+// add each result into outs[stem][ch] scaled by the cross-fade window, then divide by the summed window.
+async function overlapAdd(L,R,len,outs,infer,onChunk){
+  const n=Math.max(1,Math.ceil((len-SEG)/HOP)+1),win=crossfade(),wsum=new Float32Array(len),inp=new Float32Array(2*SEG);
+  for(let c=0;c<n;c++){
+    const s0=c*HOP,m=Math.min(SEG,len-s0);
+    inp.fill(0);inp.set(L.subarray(s0,s0+m),0);inp.set(R.subarray(s0,s0+m),SEG);
+    const y=await infer(inp);
+    for(let k=0;k<4;k++)for(let ch=0;ch<2;ch++){
+      const o=outs[k][ch],b=(k*2+ch)*SEG;
+      for(let i=0;i<m;i++)o[s0+i]+=y[b+i]*win[i];
+    }
+    for(let i=0;i<m;i++)wsum[s0+i]+=win[i];
+    await onChunk(c,n);
+  }
+  for(let k=0;k<4;k++)for(let ch=0;ch<2;ch++){const o=outs[k][ch];for(let i=0;i<len;i++)o[i]/=wsum[i];}
+}
+async function splitSong(file){
+  if(splitting)return;
+  splitting=true;
+  const base=file.name.replace(/\.[^.]+$/,'');
+  try{
+    clearAll();ensureCtx();
+    setProgress(0);setHint('decoding…');
+    const {L,R,len}=await decodeSong(file);
+    if(len/SPLIT_SR>MAX_SPLIT_SEC)throw new Error('song too long ('+MAX_SPLIT_SEC/60+' min max)');
+    if(!dmSession)await getSession();
+    // the stems are written straight into AudioBuffers, which is what the mixer plays
+    const bufs=STEM_ORDER.map(()=>ctx.createBuffer(2,len,SPLIT_SR));
+    const outs=bufs.map(b=>[b.getChannelData(0),b.getChannelData(1)]);
+    const t0=performance.now();
+    setProgress(0);setHint('separating…');
+    await overlapAdd(L,R,len,outs,runModel,(c,n)=>{
+      const left=(performance.now()-t0)/(c+1)*(n-c-1)/1000;
+      setProgress((c+1)/n);
+      setHint('separating '+(c+1)+' / '+n+(c+1<n?' · ~'+(left>=90?Math.round(left/60)+'m':Math.round(left)+'s')+' left':''));
+      return new Promise(r=>setTimeout(r));          // let the page repaint between chunks
+    });
+    STEM_ORDER.forEach((id,k)=>{
+      st[id].buf=bufs[k];
+      strips[id].classList.remove('empty');
+      fnEls[id].textContent=base;
+    });
+    recomputeDur();lastSec=-1;render(0,true);setHint('');
+  }catch(e){
+    console.error(e);
+    setProgress(0);flash(String(e&&e.message||e).slice(0,48));
+  }finally{splitting=false;}
+}
+let pickTarget=null;
+function pick(id){if(splitting)return;pickTarget=id;fileEl.click();}
+fileEl.addEventListener('change',()=>{
+  assign([...fileEl.files],pickTarget);
+  fileEl.value='';
+});
+
+// drop anywhere on the page
+window.addEventListener('dragover',e=>{e.preventDefault();document.body.classList.add('drag');});
+window.addEventListener('dragleave',e=>{if(!e.relatedTarget)document.body.classList.remove('drag');});
+window.addEventListener('drop',e=>{
+  e.preventDefault();document.body.classList.remove('drag');
+  assign([...e.dataTransfer.files],null);
+});
+
+// ── Input ─────────────────────────────────────────────────────────
+function toggleFullscreen(){
+  const d=document,el=d.documentElement;
+  const isOn=d.fullscreenElement||d.webkitFullscreenElement;
+  const fn=isOn?(d.exitFullscreen||d.webkitExitFullscreen):(el.requestFullscreen||el.webkitRequestFullscreen);
+  if(!fn)return;                                   // e.g. iPhone Safari has no element fullscreen
+  try{const p=fn.call(isOn?d:el);if(p&&p.catch)p.catch(()=>{});}catch(e){}
+}
+// Middle button: a single tap toggles play/pause, but only after DOUBLE_TAP_MS has passed
+// without a second tap. A second tap inside that window cancels the toggle and switches the
+// background search instead, so a double-tap never interrupts the music.
+// With no stems loaded the tap opens the file picker straight away (browsers only allow that
+// inside the tap itself), so double-tap does nothing special then.
+let tapT=0;
+dot.addEventListener('click',()=>{
+  if(!hasAny()){toggle();return;}
+  if(tapT){clearTimeout(tapT);tapT=0;nextTheme();return;}
+  tapT=setTimeout(()=>{tapT=0;toggle();},DOUBLE_TAP_MS);
+});
+const keyHold={};
+window.addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT')return;
+  if(e.code==='Space'){e.preventDefault();if(!e.repeat)toggle();return;}
+  const step=e.shiftKey?15:5;                                            // Shift = bigger jumps
+  if(e.key==='ArrowLeft'){e.preventDefault();seek(pos()-step);return;}
+  if(e.key==='ArrowRight'){e.preventDefault();seek(pos()+step);return;}
+  if(!e.metaKey&&!e.ctrlKey&&!e.altKey&&/^[1-4]$/.test(e.key)){          // 1-4: tap to mute / unmute vocals, drums, bass, other; hold to solo
+    e.preventDefault();
+    if(e.repeat||keyHold[e.key])return;                                    // tap = mute (on release), hold = solo
+    const id=STEMS[+e.key-1],h={id,solo:false};
+    h.t=setTimeout(()=>{h.solo=startSolo(id);},HOLD_MS);
+    keyHold[e.key]=h;return;
+  }
+  if((e.key==='f'||e.key==='F')&&!e.metaKey&&!e.ctrlKey&&!e.altKey){   // leave Cmd/Ctrl+F (find) alone
+    e.preventDefault();if(!e.repeat)toggleFullscreen();return;
+  }
+});
+// Space on a focused button also "clicks" it on keyup: swallow that so play/pause fires once.
+// 1-4 keys: a quick release mutes/unmutes, a release after a hold just ends the solo.
+window.addEventListener('keyup',e=>{
+  const h=keyHold[e.key];
+  if(h){clearTimeout(h.t);delete keyHold[e.key];if(h.solo)endSolo(h.id);else toggleMute(h.id);return;}
+  if(e.code==='Space'&&e.target.tagName!=='INPUT')e.preventDefault();
+});
+// focus lost mid-hold (alt-tab, etc.): the release would never arrive, so let go now
+function dropHolds(){
+  Object.keys(keyHold).forEach(k=>{clearTimeout(keyHold[k].t);delete keyHold[k];});
+  setSolo(null);
+}
+window.addEventListener('blur',dropHolds);
+
+// Screen off / app backgrounded: stop decoding video and stop the UI timer.
+// Audio keeps playing; the clock is rebuilt from ctx.currentTime on return.
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden){dropHolds();bgPause();stopTimer();stopMeter();}
+  else{
+    if(playing&&ctx&&ctx.state!=='running')ctx.resume();
+    bgSync();
+    if(playing){startTimer();startMeter();}
+  }
+});
+bgSync();
+</script>
+</body>
+</html>
