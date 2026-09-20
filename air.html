@@ -144,7 +144,7 @@ const KEYWORDS={
 const BG_QUERY      = 'blue sky with clouds';
 // Double-tap the middle button to cycle through these searches (one per double-tap, in order).
 const TAP_QUERIES   = ['Green Amazon Jungle','Red Arid Landscape','Brown dirt Earth'];
-const DOUBLE_TAP_MS = 300;    // two taps on the middle button within this many ms count as a double-tap
+const DOUBLE_TAP_MS = 300;    // a single tap on the middle button waits this long for a second tap before it plays/pauses; lower = snappier play, tighter double-tap
 
 // ── Power settings ────────────────────────────────────────────────
 const BG_SD         = 'background.mp4';      // local fallback: phones / tablets / data-saver
@@ -889,14 +889,16 @@ function toggleFullscreen(){
   if(!fn)return;                                   // e.g. iPhone Safari has no element fullscreen
   try{const p=fn.call(isOn?d:el);if(p&&p.catch)p.catch(()=>{});}catch(e){}
 }
-// Middle button: a tap toggles play/pause. Two taps within DOUBLE_TAP_MS also switch the
-// background search. The two toggles cancel out, so playback ends up as it was.
-let lastTap=0;
+// Middle button: a single tap toggles play/pause, but only after DOUBLE_TAP_MS has passed
+// without a second tap. A second tap inside that window cancels the toggle and switches the
+// background search instead, so a double-tap never interrupts the music.
+// With no stems loaded the tap opens the file picker straight away (browsers only allow that
+// inside the tap itself), so double-tap does nothing special then.
+let tapT=0;
 dot.addEventListener('click',()=>{
-  toggle();
-  const now=performance.now();
-  if(now-lastTap<DOUBLE_TAP_MS){lastTap=0;nextTheme();}
-  else lastTap=now;
+  if(!hasAny()){toggle();return;}
+  if(tapT){clearTimeout(tapT);tapT=0;nextTheme();return;}
+  tapT=setTimeout(()=>{tapT=0;toggle();},DOUBLE_TAP_MS);
 });
 const keyHold={};
 window.addEventListener('keydown',e=>{
