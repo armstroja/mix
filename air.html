@@ -864,6 +864,13 @@ window.addEventListener('drop',e=>{
 });
 
 // ── Input ─────────────────────────────────────────────────────────
+function toggleFullscreen(){
+  const d=document,el=d.documentElement;
+  const isOn=d.fullscreenElement||d.webkitFullscreenElement;
+  const fn=isOn?(d.exitFullscreen||d.webkitExitFullscreen):(el.requestFullscreen||el.webkitRequestFullscreen);
+  if(!fn)return;                                   // e.g. iPhone Safari has no element fullscreen
+  try{const p=fn.call(isOn?d:el);if(p&&p.catch)p.catch(()=>{});}catch(e){}
+}
 dot.addEventListener('click',toggle);
 const keyHold={};
 window.addEventListener('keydown',e=>{
@@ -878,6 +885,9 @@ window.addEventListener('keydown',e=>{
     const id=STEMS[+e.key-1],h={id,solo:false};
     h.t=setTimeout(()=>{h.solo=startSolo(id);},HOLD_MS);
     keyHold[e.key]=h;return;
+  }
+  if((e.key==='f'||e.key==='F')&&!e.metaKey&&!e.ctrlKey&&!e.altKey){   // leave Cmd/Ctrl+F (find) alone
+    e.preventDefault();if(!e.repeat)toggleFullscreen();return;
   }
 });
 // Space on a focused button also "clicks" it on keyup: swallow that so play/pause fires once.
