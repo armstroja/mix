@@ -893,7 +893,16 @@ function loadOrt(){
   if(window.ort)return Promise.resolve();
   return ortP||(ortP=new Promise((ok,no)=>{
     const s=document.createElement('script');s.src=ORT_URL;
-    s.onload=()=>{ort.env.wasm.wasmPaths=ORT_BASE;ok();};
+    s.onload=()=>{
+      ort.env.wasm.wasmPaths=ORT_BASE;
+      // the threaded WASM backend needs SharedArrayBuffer, which only exists on a
+      // cross-origin-isolated page (COOP+COEP headers). This page isn't one — turning
+      // those on would also block the Pexels videos and the jsdelivr script, since
+      // neither sends the CORP headers COEP:require-corp demands. So: single thread,
+      // slower but it actually runs instead of aborting on session creation.
+      ort.env.wasm.numThreads=(typeof crossOriginIsolated!=='undefined'&&crossOriginIsolated)?(navigator.hardwareConcurrency||4):1;
+      ok();
+    };
     s.onerror=()=>{ortP=null;no(new Error('couldn\u2019t load onnxruntime'));};
     document.head.appendChild(s);
   }));
