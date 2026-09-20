@@ -96,25 +96,6 @@ body.drag #app{opacity:.55;}
 #fill.jump{transition:none;}
 #time{text-shadow:var(--shadow);font-size:9px;letter-spacing:.08em;color:var(--faint);min-width:64px;text-align:right;font-variant-numeric:tabular-nums;}
 #hint{text-shadow:var(--shadow);font-size:8px;letter-spacing:.22em;text-transform:uppercase;color:var(--faint);height:10px;}
-#bgwrap{display:flex;flex-direction:column;align-items:center;gap:12px;}
-#bottomrow{display:flex;align-items:center;gap:20px;}
-#bgbtn,.pbtn{
-  background:none;border:none;font-family:inherit;cursor:pointer;text-decoration:none;
-  font-size:8px;letter-spacing:.22em;text-transform:uppercase;color:var(--faint);text-shadow:var(--shadow);
-}
-#bgbtn:hover,.pbtn:hover{color:var(--ink);}
-#bgpanel{display:flex;flex-direction:column;align-items:center;gap:8px;}
-#bgpanel[hidden]{display:none;}
-#bgpanel input{
-  width:min(240px,70vw);background:var(--field);border:1px solid var(--line);border-radius:6px;
-  padding:7px 10px;font-family:inherit;font-size:11px;color:var(--ink);text-align:center;outline:none;
-  -webkit-user-select:text;user-select:text;
-}
-#bgpanel input::placeholder{color:var(--faint);}
-#bgpanel input:focus{border-color:var(--ink);}
-@media (pointer:coarse){#bgpanel input{font-size:16px;}} /* stops iOS zooming on focus */
-.prow{display:flex;gap:18px;align-items:center;}
-#bgstat{font-size:8px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);text-shadow:var(--shadow);min-height:10px;}
 #credit{
   position:fixed;z-index:2;left:0;right:0;bottom:max(10px,env(safe-area-inset-bottom));text-align:center;
   font-size:8px;letter-spacing:.18em;text-transform:uppercase;color:var(--faint);text-shadow:var(--shadow);pointer-events:none;
@@ -128,8 +109,8 @@ button:focus-visible,#dot:focus-visible{outline:1px solid var(--seg-on);outline-
 </head>
 <body>
 
-<!-- background.mp4 sits in the same folder as this file. preload=none keeps it off
-     the wire until the user actually starts playback. -->
+<!-- background.mp4 sits in the same folder as this file and is the fallback if Pexels fails.
+     preload=none keeps the videos off the wire until the user actually starts playback. -->
 <video id="bg" muted loop playsinline preload="none" disablepictureinpicture disableremoteplayback></video>
 <video id="bg2" muted playsinline preload="none" disablepictureinpicture disableremoteplayback></video>
 
@@ -143,21 +124,6 @@ button:focus-visible,#dot:focus-visible{outline:1px solid var(--seg-on);outline-
     <div id="time">–:–– / –:––</div>
   </div>
   <div id="hint">drop stems anywhere</div>
-  <div id="bgwrap">
-    <div id="bottomrow">
-      <button id="loadbtn" class="pbtn" type="button">load stems</button>
-      <button id="bgbtn" type="button">background</button>
-      <button id="fsbtn" class="pbtn" type="button">fullscreen</button>
-    </div>
-    <div id="bgpanel" hidden>
-      <input id="pxq" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="search: clouds, rain, neon…">
-      <div class="prow">
-        <button id="pxgo" class="pbtn" type="button">go</button>
-        <button id="pxreset" class="pbtn" type="button">reset</button>
-      </div>
-      <div id="bgstat"></div>
-    </div>
-  </div>
 </div>
 <div id="credit" hidden>video by <a id="creditName" href="#" target="_blank" rel="noopener"></a> on <a id="creditPx" href="#" target="_blank" rel="noopener">pexels</a></div>
 <input type="file" id="file" accept="audio/*,.mp3,.m4a,.wav,.aif,.aiff,.flac,.ogg" multiple hidden>
@@ -172,29 +138,33 @@ const KEYWORDS={
   other: ['other','inst','guitar','piano','keys','synth','pad','string','horn','brass','fx','misc'],
 };
 
+// ── Background search (hardcoded) ─────────────────────────────────
+// Change this to change what the background clips show. A different term automatically
+// fetches a fresh playlist the next time the page loads.
+const BG_QUERY      = 'blue sky with clouds';
+
 // ── Power settings ────────────────────────────────────────────────
-const BG_SD         = 'background.mp4';      // phones / tablets / data-saver
-const BG_HQ         = 'background-hq.mp4';   // laptops and desktops (falls back to SD if missing)
+const BG_SD         = 'background.mp4';      // local fallback: phones / tablets / data-saver
+const BG_HQ         = 'background-hq.mp4';   // local fallback: laptops and desktops (falls back to SD if missing)
 const BG_WHILE_IDLE = false;  // false: the background only loads and rolls while audio is playing, and goes black when it stops
 const BG_IDLE_MS    = 1200;   // how long audio must be stopped before the background fades to black (so seeking doesn't flash it)
 const TICK_MS       = 250;    // progress updates per second = 1000/TICK_MS
 const IDLE_SUSPEND  = 20000;  // ms of pause before the audio hardware is released
 const TINT          = true;   // tint the stem meters with the video's dominant colour
 const METER_MS      = 66;     // level-meter refresh in ms (~15 fps); raise it to save battery
-const MAX_CLIP_MB     = 12;     // skip Pexels files heavier than this; only works if Pexels reports a file size (often it doesn't); 0 = no cap
-const PX_WIDTH_HQ     = 1280;   // desktop: smallest Pexels file at least this wide (720p). 1920 = ~2-3x the download
-const PX_WIDTH_SD     = 960;    // phones / data-saver
-const CHROME_L        = 56;     // Safari's top bar takes the mixer colour at this lightness (%). The meters' "on" colour reads as ~56% on dark video; lower = darker, subtler bar
-const LIGHTEN         = 25;     // meters take the scene's colour and make it this many lightness points lighter
-const SEG_L_MIN       = 72;     // ...but never darker than this (keeps them visible on dark scenes)
-const SEG_L_MAX       = 92;     // ...and never lighter than this (keeps some colour on bright scenes)
-const INK_L           = 94;     // labels, buttons and seek bar text
+const MAX_CLIP_MB   = 12;     // skip Pexels files heavier than this; only works if Pexels reports a file size (often it doesn't); 0 = no cap
+const PX_WIDTH_HQ   = 1280;   // desktop: smallest Pexels file at least this wide (720p). 1920 = ~2-3x the download
+const PX_WIDTH_SD   = 960;    // phones / data-saver
+const CHROME_L      = 56;     // Safari's top bar takes the mixer colour at this lightness (%)
+const LIGHTEN       = 25;     // meters take the scene's colour and make it this many lightness points lighter
+const SEG_L_MIN     = 72;     // ...but never darker than this (keeps them visible on dark scenes)
+const SEG_L_MAX     = 92;     // ...and never lighter than this (keeps some colour on bright scenes)
+const INK_L         = 94;     // labels, buttons and seek bar text
 
 // ── Pexels proxy ──────────────────────────────────────────────────
 // Search requests go to your Cloudflare Worker, which adds the API key server-side.
 // No key ever touches this page. Change this to your Worker's URL.
 const PX_API        = 'https://patient-mode-2bc6.optimizedjack.workers.dev/search';
-const DEFAULT_Q     = 'blue sky with clouds';   // searched automatically on load until you pick your own term with "background"
 // The current clip loops until the next one has buffered. Some phones refuse to preload
 // hidden videos, so if the next clip still isn't ready after this long we hand over anyway
 // (the old clip keeps looping on screen until the new one is actually playing).
@@ -209,7 +179,7 @@ let playing=false,startT=0,offset=0,dur=0,timer=0,idleT=0,meterT=0;
 
 const $=id=>document.getElementById(id);
 const dot=$('dot'),fillEl=$('fill'),timeEl=$('time'),barEl=$('bar'),hintEl=$('hint'),fileEl=$('file');
-const seekBackBtn=$('seekback'),seekFwdBtn=$('seekfwd'),fsBtn=$('fsbtn');
+const seekBackBtn=$('seekback'),seekFwdBtn=$('seekfwd');
 const strips={},segs={},fnEls={};
 const vids=[$('bg'),$('bg2')];       // double-buffered: one plays, the other preloads the next clip
 let bgVid=vids[0];                   // the active one
@@ -219,10 +189,10 @@ const onBg=(ev,fn)=>vids.forEach(v=>v.addEventListener(ev,e=>{if(v===bgVid)fn(e)
 // ── Background video ──────────────────────────────────────────────
 // Decoding video is the single biggest battery cost here, so it only runs
 // when it can actually be seen and (optionally) only while audio plays.
-let bgLoaded=false,bgStale=false;   // bgStale: the search changed while nothing was playing, so load it on the next play
+let bgLoaded=false;
 function bgPlay(){
   if(document.hidden)return;
-  if(!bgLoaded||bgStale){bgStale=false;applyBg();return;}   // first play (or a changed search): pick + load a source
+  if(!bgLoaded){applyBg();return;}   // first play: pick + load a source
   if(!bgVid.getAttribute('src'))return; // still resolving
   bgVid.play().catch(()=>{
     // autoplay blocked (iOS Low Power Mode does this): retry on first touch
@@ -251,11 +221,6 @@ function bgSync(){
   clearTimeout(bgIdleT);
   if(playing||BG_WHILE_IDLE){bgPlay();bgShow(true);}
   else bgIdleT=setTimeout(()=>{if(!playing){bgPause();bgShow(false);}},BG_IDLE_MS);
-}
-// A changed search while paused is stored and only fetched when playback starts.
-function refreshBg(){
-  if(playing||BG_WHILE_IDLE)return applyBg();
-  bgStale=true;return Promise.resolve();
 }
 // ── Tint the stem meters from the video ───────────────────────────
 // Every 2.5s while a clip is playing, the current frame is shrunk to 32x18 and the most
@@ -344,7 +309,7 @@ function applyTint(rgb,lum){
   set('--ink',col(txs,INK_L,.9));
   set('--faint',col(txs,INK_L,.65));
   set('--line',col(txs,INK_L,.5));
-  set('--field',col(txs,10,.28));                            // dark glass behind the search box
+  set('--field',col(txs,10,.28));
   set('--shadow-c',col(txs,4,.35+.25*t));                    // soft dark halo, stronger on bright scenes
   setChrome(rgb?'hsl('+h+','+sat+'%,'+CHROME_L+'%)':'#000');
 }
@@ -370,18 +335,17 @@ function wantHQ(){
 }
 
 // ── Pexels (via your Cloudflare Worker) ───────────────────────────
-// One search fetches a shuffled playlist of up to 10 clips. The search term and playlist
-// (with the current position) live in localStorage on this device. After that first fetch
-// there are no more API calls: reloads resume the cached playlist until you hit "go"
-// (new playlist) or "reset".
+// One search fetches a shuffled playlist of up to 10 clips for BG_QUERY. The playlist
+// (with the current position) is cached in localStorage on this device, so after that first
+// fetch there are no more API calls: reloads resume the cached playlist. Editing BG_QUERY
+// makes the cache stale and a new playlist is fetched.
 const LS_KEY='mixerair:pexels';
 let px={};
 try{px=JSON.parse(localStorage.getItem(LS_KEY)||'null')||{};}catch(e){}
 delete px.pick;                     // old single-video cache format
 const savePx=()=>{try{localStorage.setItem(LS_KEY,JSON.stringify(px));}catch(e){}};
 if('key' in px){delete px.key;savePx();}   // older builds stored the API key here: scrub it
-const bgPanel=$('bgpanel'),bgToggle=$('bgbtn'),qIn=$('pxq'),statEl=$('bgstat'),creditEl=$('credit');
-const setStat=t=>{statEl.textContent=t;};
+const creditEl=$('credit');
 const safeUrl=u=>(typeof u==='string'&&u.startsWith('https://'))?u:'#';
 const cur=()=>px.list&&px.list[px.idx||0];
 let playlist=false;                 // true while stepping through several Pexels clips
@@ -397,7 +361,7 @@ function showCredit(){
 
 async function pexelsFetch(){
   const qs=new URLSearchParams({
-    query:px.q||DEFAULT_Q,orientation:'landscape',size:'medium',
+    query:BG_QUERY,orientation:'landscape',size:'medium',
     min_duration:'5',max_duration:'20',per_page:'40'
   });
   const r=await fetch(PX_API+'?'+qs);
@@ -410,9 +374,9 @@ async function pexelsFetch(){
       .map(f=>({w:f.width,l:f.link,s:f.size||0}))
       .sort((a,b)=>a.w-b.w)
   })).filter(v=>v.files.length);
-  if(!found.length)throw new Error('no results for \u201c'+(px.q||DEFAULT_Q)+'\u201d');
+  if(!found.length)throw new Error('no results for \u201c'+BG_QUERY+'\u201d');
   for(let i=found.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[found[i],found[j]]=[found[j],found[i]];}
-  px.list=found.slice(0,10);px.idx=0;px.lq=px.q||DEFAULT_Q;   // lq = the search this playlist belongs to
+  px.list=found.slice(0,10);px.idx=0;px.lq=BG_QUERY;   // lq = the search this playlist belongs to
   savePx();
 }
 // smallest mp4 that's at least the target width, else the biggest available
@@ -427,17 +391,14 @@ function chooseFile(files,hq){
 
 async function resolveBg(){
   const hq=wantHQ();
-  {                                  // Pexels is tried first (default term "clouds"); the local file is the fallback
-    try{
-      if(px.lq!==(px.q||DEFAULT_Q))px.list=null;     // cached playlist is from a different search (or an older build)
-      if(!px.list||!px.list.length){setStat('fetching\u2026');await pexelsFetch();}
-      setStat('');showCredit();
-      playlist=px.list.length>1;
-      return chooseFile(cur().files,hq);
-    }catch(e){
-      console.warn('Pexels:',e);
-      setStat(String(e.message||e));
-    }
+  try{                               // Pexels is tried first; the local file is the fallback
+    if(px.lq!==BG_QUERY)px.list=null;                // cached playlist is from a different search (or an older build)
+    if(!px.list||!px.list.length)await pexelsFetch();
+    showCredit();
+    playlist=px.list.length>1;
+    return chooseFile(cur().files,hq);
+  }catch(e){
+    console.warn('Pexels:',e);
   }
   playlist=false;creditEl.hidden=true;
   return hq?BG_HQ:BG_SD;
@@ -553,30 +514,9 @@ onBg('error',()=>{
       bgSync();return;
     }
     px.list=null;savePx();creditEl.hidden=true;
-    setStat('pexels links failed, using local file');
   }
   playlist=false;bgVid.loop=true;
   setBgSrc(BG_SD);bgSync();
-});
-
-bgToggle.addEventListener('click',()=>{
-  bgPanel.hidden=!bgPanel.hidden;
-  if(!bgPanel.hidden)qIn.value=px.q||DEFAULT_Q;
-});
-$('pxgo').addEventListener('click',async()=>{
-  px.q=qIn.value.trim()||DEFAULT_Q;
-  px.list=null;px.idx=0;savePx();
-  setStat('');
-  await refreshBg();
-  if(!playing&&!BG_WHILE_IDLE){setStat('saved: loads when you press play');return;}   // no Pexels request until music plays
-  if(!statEl.textContent)bgPanel.hidden=true;   // stay open only if something went wrong
-});
-$('pxreset').addEventListener('click',()=>{
-  px={};
-  try{localStorage.removeItem(LS_KEY);}catch(e){}
-  qIn.value='';setStat('');creditEl.hidden=true;
-  bgPanel.hidden=true;
-  refreshBg();
 });
 
 // ── Keep audio independent of the video ───────────────────────────
@@ -837,7 +777,6 @@ barEl.addEventListener('pointercancel',()=>{scrubbing=false;if(wasPlaying)play()
 // mobile transport buttons — same seek the arrow keys do
 seekBackBtn.addEventListener('click',()=>seek(pos()-5));
 seekFwdBtn.addEventListener('click',()=>seek(pos()+5));
-fsBtn.addEventListener('click',toggleFullscreen);
 
 // ── Loading ───────────────────────────────────────────────────────
 function detect(name){
@@ -911,7 +850,6 @@ async function load(id,file){
 }
 let pickTarget=null;
 function pick(id){pickTarget=id;fileEl.click();}
-$('loadbtn').addEventListener('click',()=>pick(null));
 fileEl.addEventListener('change',()=>{
   assign([...fileEl.files],pickTarget);
   fileEl.value='';
@@ -926,14 +864,8 @@ window.addEventListener('drop',e=>{
 });
 
 // ── Input ─────────────────────────────────────────────────────────
-function toggleFullscreen(){
-  const d=document,el=d.documentElement;
-  const isOn=d.fullscreenElement||d.webkitFullscreenElement;
-  const fn=isOn?(d.exitFullscreen||d.webkitExitFullscreen):(el.requestFullscreen||el.webkitRequestFullscreen);
-  if(!fn)return;                                   // e.g. iPhone Safari has no element fullscreen
-  try{const p=fn.call(isOn?d:el);if(p&&p.catch)p.catch(()=>{});}catch(e){}
-}
 dot.addEventListener('click',toggle);
+const keyHold={};
 window.addEventListener('keydown',e=>{
   if(e.target.tagName==='INPUT')return;
   if(e.code==='Space'){e.preventDefault();if(!e.repeat)toggle();return;}
@@ -947,13 +879,9 @@ window.addEventListener('keydown',e=>{
     h.t=setTimeout(()=>{h.solo=startSolo(id);},HOLD_MS);
     keyHold[e.key]=h;return;
   }
-  if((e.key==='f'||e.key==='F')&&!e.metaKey&&!e.ctrlKey&&!e.altKey){   // leave Cmd/Ctrl+F (find) alone
-    e.preventDefault();if(!e.repeat)toggleFullscreen();return;
-  }
 });
 // Space on a focused button also "clicks" it on keyup: swallow that so play/pause fires once.
 // 1-4 keys: a quick release mutes/unmutes, a release after a hold just ends the solo.
-const keyHold={};
 window.addEventListener('keyup',e=>{
   const h=keyHold[e.key];
   if(h){clearTimeout(h.t);delete keyHold[e.key];if(h.solo)endSolo(h.id);else toggleMute(h.id);return;}
