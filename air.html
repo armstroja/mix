@@ -142,6 +142,9 @@ const KEYWORDS={
 // Change this to change what the background clips show. A different term automatically
 // fetches a fresh playlist the next time the page loads.
 const BG_QUERY      = 'blue sky with clouds';
+// Double-tap the middle button to cycle through these searches (one per double-tap, in order).
+const TAP_QUERIES   = ['Green Amazon Jungle','Red Arid Landscape','Brown dirt Earth'];
+const DOUBLE_TAP_MS = 300;    // two taps on the middle button within this many ms count as a double-tap
 
 // ── Power settings ────────────────────────────────────────────────
 const BG_SD         = 'background.mp4';      // local fallback: phones / tablets / data-saver
@@ -345,6 +348,8 @@ try{px=JSON.parse(localStorage.getItem(LS_KEY)||'null')||{};}catch(e){}
 delete px.pick;                     // old single-video cache format
 const savePx=()=>{try{localStorage.setItem(LS_KEY,JSON.stringify(px));}catch(e){}};
 if('key' in px){delete px.key;savePx();}   // older builds stored the API key here: scrub it
+let bgQuery=BG_QUERY,qIdx=-1,bgGen=0;      // bgQuery = the search in use right now; bgGen lets a newer load cancel an older one
+{const i=TAP_QUERIES.indexOf(px.lq);if(i>-1){qIdx=i;bgQuery=px.lq;}}   // a double-tap choice survives reloads
 const creditEl=$('credit');
 const safeUrl=u=>(typeof u==='string'&&u.startsWith('https://'))?u:'#';
 const cur=()=>px.list&&px.list[px.idx||0];
@@ -361,7 +366,7 @@ function showCredit(){
 
 async function pexelsFetch(){
   const qs=new URLSearchParams({
-    query:BG_QUERY,orientation:'landscape',size:'medium',
+    query:bgQuery,orientation:'landscape',size:'medium',
     min_duration:'5',max_duration:'20',per_page:'40'
   });
   const r=await fetch(PX_API+'?'+qs);
@@ -374,9 +379,9 @@ async function pexelsFetch(){
       .map(f=>({w:f.width,l:f.link,s:f.size||0}))
       .sort((a,b)=>a.w-b.w)
   })).filter(v=>v.files.length);
-  if(!found.length)throw new Error('no results for \u201c'+BG_QUERY+'\u201d');
+  if(!found.length)throw new Error('no results for \u201c'+bgQuery+'\u201d');
   for(let i=found.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[found[i],found[j]]=[found[j],found[i]];}
-  px.list=found.slice(0,10);px.idx=0;px.lq=BG_QUERY;   // lq = the search this playlist belongs to
+  px.list=found.slice(0,10);px.idx=0;px.lq=bgQuery;   // lq = the search this playlist belongs to
   savePx();
 }
 // smallest mp4 that's at least the target width, else the biggest available
@@ -392,7 +397,7 @@ function chooseFile(files,hq){
 async function resolveBg(){
   const hq=wantHQ();
   try{                               // Pexels is tried first; the local file is the fallback
-    if(px.lq!==BG_QUERY)px.list=null;                // cached playlist is from a different search (or an older build)
+    if(px.lq!==bgQuery)px.list=null;                 // cached playlist is from a different search (or an older build)
     if(!px.list||!px.list.length)await pexelsFetch();
     showCredit();
     playlist=px.list.length>1;
@@ -405,12 +410,25 @@ async function resolveBg(){
 }
 async function applyBg(){
   bgLoaded=true;
+  const g=++bgGen;
   const src=await resolveBg();
+  if(g!==bgGen)return;              // a newer search started while this one was resolving
   clearStandby();
   bgVid.classList.add('show');other().classList.remove('show');
   bgVid.loop=true;                  // always loops; a playlist hands over once the next clip is ready
   setBgSrc(src,cur()?cur().img:'');
   bgSync();
+}
+// Double-tap: move on to the next search in TAP_QUERIES and fetch a fresh playlist for it.
+// While paused nothing is fetched; the new search loads when playback next starts.
+function nextTheme(){
+  qIdx=(qIdx+1)%TAP_QUERIES.length;
+  bgQuery=TAP_QUERIES[qIdx];
+  px.list=null;px.idx=0;savePx();
+  bgGen++;                          // cancel any load still in flight for the old search
+  clearStandby();playlist=false;
+  if(playing||BG_WHILE_IDLE)applyBg();
+  else bgLoaded=false;
 }
 
 // ── Playlist hand-over (double buffering) ─────────────────────────
@@ -871,7 +889,15 @@ function toggleFullscreen(){
   if(!fn)return;                                   // e.g. iPhone Safari has no element fullscreen
   try{const p=fn.call(isOn?d:el);if(p&&p.catch)p.catch(()=>{});}catch(e){}
 }
-dot.addEventListener('click',toggle);
+// Middle button: a tap toggles play/pause. Two taps within DOUBLE_TAP_MS also switch the
+// background search. The two toggles cancel out, so playback ends up as it was.
+let lastTap=0;
+dot.addEventListener('click',()=>{
+  toggle();
+  const now=performance.now();
+  if(now-lastTap<DOUBLE_TAP_MS){lastTap=0;nextTheme();}
+  else lastTap=now;
+});
 const keyHold={};
 window.addEventListener('keydown',e=>{
   if(e.target.tagName==='INPUT')return;
