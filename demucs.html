@@ -147,8 +147,8 @@ const TAP_QUERIES   = ['Green Amazon Jungle','Red Arid Landscape','Brown dirt Ea
 const DOUBLE_TAP_MS = 300;    // a single tap on the middle button waits this long for a second tap before it plays/pauses; lower = snappier play, tighter double-tap
 
 // ── Stem separation (HTDemucs via ONNX Runtime Web, runs entirely in the browser) ──
-// Drop or pick ONE audio file whose name doesn't name a stem and it is split into 4 stems.
-const MODEL_URL     = 'https://huggingface.co/StemSplitio/htdemucs-onnx/resolve/main/htdemucs_fp16weights.onnx';
+// Drop or pick ONE audio file and it is split into 4 stems.
+const MODEL_URL     = 'https://huggingface.co/StemSplitio/htdemucs-onnx/resolve/d54ed9eb60e258ea82131c6ee14578628816456a/htdemucs_fp16weights.onnx';
 const MODEL_CACHE   = 'mixerair-model-v1';   // Cache Storage bucket: the model is downloaded once per browser
 const MODEL_BYTES   = 166e6;                 // used for the download % if the server sends no content-length
 const ORT_BASE      = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.0/dist/';
@@ -845,14 +845,15 @@ function clearAll(){
 }
 // How incoming files are placed:
 //  - one file from a stem's own label -> that stem (replaces whatever is there)
-//  - ONE file whose name doesn't name a stem -> a whole song: it is split into 4 stems
-//  - files whose names identify distinct stems -> those stems, replaced in place
-//  - otherwise they fill the empty slots, and if there are more files than empty slots
-//    it's a new song: everything is cleared first so old and new never get mixed
+//  - ONE file with no target -> always treated as a whole song and split into 4 stems,
+//    regardless of what it's named (a bass-heavy track called "Bass Drop.mp3" still splits)
+//  - two or more files whose names identify distinct stems -> those stems, replaced in place
+//  - otherwise multiple files fill the empty slots, and if there are more files than empty
+//    slots it's a new song: everything is cleared first so old and new never get mixed
 function assign(files,target){
   if(splitting||!files.length)return;
   if(target&&files.length===1){load(target,files[0]);return;}
-  if(files.length===1&&!detect(files[0].name)){splitSong(files[0]);return;}
+  if(files.length===1){splitSong(files[0]);return;}
   files=files.slice(0,STEMS.length);
   const ids=files.map(f=>detect(f.name));
   const named=ids.every((id,i)=>id&&ids.indexOf(id)===i);   // every file names a different stem
@@ -933,6 +934,9 @@ async function getSession(forceCpu){
     console.warn('webgpu failed, using cpu:',e);
     dmSession=await make(['wasm']);dmGpu=false;
   }
+  // surface which execution provider actually ended up running, so a slow separation
+  // has a visible explanation instead of just looking stuck
+  console.log('[demucs] execution provider:',dmGpu?'webgpu':'wasm (cpu)');
 }
 // One model call. If the GPU path dies mid-run, rebuild the session on the CPU and retry once.
 async function runModel(inp){
@@ -993,11 +997,11 @@ async function splitSong(file){
     const bufs=STEM_ORDER.map(()=>ctx.createBuffer(2,len,SPLIT_SR));
     const outs=bufs.map(b=>[b.getChannelData(0),b.getChannelData(1)]);
     const t0=performance.now();
-    setProgress(0);setHint('separating…');
+    setProgress(0);setHint((dmGpu?'':'[cpu] ')+'separating…');
     await overlapAdd(L,R,len,outs,runModel,(c,n)=>{
       const left=(performance.now()-t0)/(c+1)*(n-c-1)/1000;
       setProgress((c+1)/n);
-      setHint('separating '+(c+1)+' / '+n+(c+1<n?' · ~'+(left>=90?Math.round(left/60)+'m':Math.round(left)+'s')+' left':''));
+      setHint((dmGpu?'':'[cpu] ')+'separating '+(c+1)+' / '+n+(c+1<n?' · ~'+(left>=90?Math.round(left/60)+'m':Math.round(left)+'s')+' left':''));
       return new Promise(r=>setTimeout(r));          // let the page repaint between chunks
     });
     STEM_ORDER.forEach((id,k)=>{
